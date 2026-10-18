@@ -1,0 +1,15 @@
+[package]
+name = "nom-sheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nom-sheet"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { workspace = true }
+nom-workbook = { path = "../../crates/workbook" }
+nom-formula = { path = "../../crates/formula" }
+nom-xlsx = { path = "../../crates/xlsx" }

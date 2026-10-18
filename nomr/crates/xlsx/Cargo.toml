@@ -1,0 +1,11 @@
+[package]
+name = "nom-xlsx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nom-workbook = { path = "../workbook" }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+thiserror = { workspace = true }

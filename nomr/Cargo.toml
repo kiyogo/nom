@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/package",
+    "crates/workbook",
+    "crates/formula",
+    "crates/xlsx",
+    "apps/launcher",
+    "apps/sheet",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Nom Team"]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+tokio = { version = "1.43", features = ["full"] }
+sha2 = "0.10"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+quick-xml = "0.41"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+eframe = { version = "0.30", default-features = false, features = ["default_fonts", "wgpu"] }
+anyhow = "1.0"
+thiserror = "2.0"
+directories = "5.0"

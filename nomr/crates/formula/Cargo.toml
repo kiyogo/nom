@@ -1,0 +1,8 @@
+[package]
+name = "nom-formula"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nom-workbook = { path = "../workbook" }
