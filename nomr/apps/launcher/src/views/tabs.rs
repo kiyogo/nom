@@ -685,8 +685,12 @@ pub fn render_chrome_tab_bar(
         // Hover uses a full-size rounded gray surface; transparent DirectWrite
         // text keeps it from creating a second rectangle behind the label.
         if tab_resp.hovered() && !is_active {
-            let hover_rect = Rect::from_min_max(tab_rect.min + Vec2::splat(1.0), tab_rect.max - Vec2::splat(1.0));
-            p.rect_filled(hover_rect, Rounding::same(10.0), CHROME_TAB_HOVER_BG);
+            // Leave visible breathing room on every edge without reducing
+            // the label, icon, or clickable area of the tab.
+            let hover_rect = tab_rect.shrink2(Vec2::new(4.0, 4.0));
+            if hover_rect.is_positive() {
+                p.rect_filled(hover_rect, Rounding::same(8.0), CHROME_TAB_HOVER_BG);
+            }
         }
 
         let content_painter = p.with_clip_rect(tab_rect);
