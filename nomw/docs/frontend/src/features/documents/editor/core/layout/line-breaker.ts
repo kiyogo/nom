@@ -136,7 +136,6 @@ export function layoutParagraphLines(input: BreakLineInput): ParagraphLayoutResu
   for (let wIdx = 0; wIdx < words.length; wIdx++) {
     const w = words[wIdx];
     const avail = getAvailableWidthForLine(lineIdx);
-    const nextAvail = getAvailableWidthForLine(lineIdx + 1);
 
     if (w.isSpace) {
       // Trailing spaces hang on the current line (Word / Google Docs / CSS behavior)
@@ -159,26 +158,10 @@ export function layoutParagraphLines(input: BreakLineInput): ParagraphLayoutResu
       currentGroup.push(w);
       currentGroupWidth += w.width;
     } else {
-      // When currentGroupWidth + w.width > avail:
-      // Word processors (Word / Google Docs) only wrap whole words to the next line when:
-      // 1) The current line has preceding items (currentGroup.length > 0),
-      // 2) The preceding item is a break opportunity (whitespace or hyphen/slash), AND
-      // 3) The whole word fits on the next line (w.width <= nextAvail).
-      const lastItem = currentGroup.length > 0 ? currentGroup[currentGroup.length - 1] : null;
-      const hasBreakOpportunity = lastItem
-        ? (lastItem.isSpace || lastItem.text === '-' || lastItem.text === '—' || lastItem.text === '/')
-        : false;
-      const fitsOnNextLine = w.width <= nextAvail;
-
-      if (hasBreakOpportunity && fitsOnNextLine) {
-        lineWordGroups.push(currentGroup);
-        lineIdx += 1;
-        currentGroup = [w];
-        currentGroupWidth = w.width;
-      } else {
-        // Continuous characters, typing without spaces, or word wider than line:
-        // Break character-by-character (by grapheme clusters) to fill remaining space on the current line first,
-        // and ONLY move the overflowing characters to the next line without dropping whole lines!
+      // Fill the remaining line before moving overflowing graphemes. Moving
+      // the whole token after a space made already typed text jump to the next
+      // line as the token grew. Graphemes keep Vietnamese accents/emoji intact.
+      {
         const clusters = getGraphemeClusters(w.text);
         let partialWord = '';
         let partialWidth = 0;
