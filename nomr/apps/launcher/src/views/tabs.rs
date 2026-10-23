@@ -687,7 +687,7 @@ pub fn render_chrome_tab_bar(
         if tab_resp.hovered() && !is_active {
             // Leave visible breathing room on every edge without reducing
             // the label, icon, or clickable area of the tab.
-            let hover_rect = tab_rect.shrink2(Vec2::new(4.0, 4.0));
+            let hover_rect = tab_rect.shrink2(Vec2::new(6.0, 6.0));
             if hover_rect.is_positive() {
                 p.rect_filled(hover_rect, Rounding::same(8.0), CHROME_TAB_HOVER_BG);
             }
