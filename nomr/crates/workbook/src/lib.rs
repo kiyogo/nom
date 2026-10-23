@@ -174,20 +174,46 @@ pub enum NumFormat {
     Date,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellStyle {
+    /// Font size in whole points.
+    pub font_size: u16,
+    pub font_family: String,
     pub bold: bool,
     pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
     pub text_color: Option<[u8; 3]>,
     pub bg_color: Option<[u8; 3]>,
     pub align: CellAlign,
     pub num_format: NumFormat,
 }
 
+impl Default for CellStyle {
+    fn default() -> Self {
+        Self {
+            font_size: 10,
+            font_family: "Arial".into(),
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            text_color: None,
+            bg_color: None,
+            align: CellAlign::General,
+            num_format: NumFormat::General,
+        }
+    }
+}
+
 impl CellStyle {
     pub fn is_default(&self) -> bool {
-        !self.bold
+        self.font_size == 10
+            && self.font_family == "Arial"
+            && !self.bold
             && !self.italic
+            && !self.underline
+            && !self.strikethrough
             && self.text_color.is_none()
             && self.bg_color.is_none()
             && self.align == CellAlign::General
@@ -794,6 +820,7 @@ mod tests {
             bg_color: Some([255, 255, 0]),
             align: CellAlign::Center,
             num_format: NumFormat::Currency,
+            ..CellStyle::default()
         };
         sheet.set_style(a1, style.clone());
         sheet.set(a1, CellValue::Number(1250.5));
@@ -801,6 +828,38 @@ mod tests {
         assert_eq!(sheet.get(a1).format_display(NumFormat::Currency), "$1250.50");
         assert_eq!(sheet.get(a1).format_display(NumFormat::Number), "1250.50");
         assert_eq!(sheet.get(a1).format_display(NumFormat::Percentage), "125050.00%");
+    }
+
+    #[test]
+    fn cell_typography_defaults() {
+        let style = CellStyle::default();
+        assert_eq!(style.font_size, 10);
+        assert_eq!(style.font_family, "Arial");
+        assert!(!style.underline);
+        assert!(!style.strikethrough);
+        assert!(style.is_default());
+        assert_eq!(style, style.clone());
+    }
+
+    #[test]
+    fn typography_only_styles_are_stored_and_can_be_cleared() {
+        let address = CellAddress::parse("B2").unwrap();
+        let mut sheet = Sheet::new("Typography");
+        for style in [
+            CellStyle { font_size: 18, ..CellStyle::default() },
+            CellStyle { font_family: "Calibri".into(), ..CellStyle::default() },
+            CellStyle { underline: true, ..CellStyle::default() },
+            CellStyle { strikethrough: true, ..CellStyle::default() },
+        ] {
+            assert!(!style.is_default());
+            sheet.set_style(address, style.clone());
+            assert_eq!(sheet.get_style(address), Some(&style));
+            assert_eq!(sheet.get(address), &CellValue::Blank);
+            assert_eq!(sheet.populated_cell_count(), 0);
+
+            sheet.set_style(address, CellStyle::default());
+            assert!(sheet.get_style(address).is_none());
+        }
     }
 
     #[test]

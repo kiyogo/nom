@@ -13,3 +13,7 @@ eframe = { workspace = true }
 nom-workbook = { path = "../../crates/workbook" }
 nom-formula = { path = "../../crates/formula" }
 nom-xlsx = { path = "../../crates/xlsx" }
+arboard = { version = "3.6", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

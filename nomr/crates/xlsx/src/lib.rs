@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -337,11 +337,9 @@ fn commit_cell(
         }
     };
     sheet.set(address, value);
-    if let Some(idx) = style_idx {
-        if let Some(style) = styles.get(idx) {
-            if !style.is_default() {
-                sheet.set_style(address, style.clone());
-            }
+    if let Some(style) = styles.get(style_idx.unwrap_or(0)) {
+        if !style.is_default() {
+            sheet.set_style(address, style.clone());
         }
     }
     Ok(())
@@ -393,11 +391,74 @@ fn parse_hex_rgb(hex: &str) -> Option<[u8; 3]> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedFont {
+    font_size: u16,
+    font_family: String,
     bold: bool,
     italic: bool,
+    underline: bool,
+    strikethrough: bool,
     color: Option<[u8; 3]>,
+}
+
+impl Default for ParsedFont {
+    fn default() -> Self {
+        Self::from(&CellStyle::default())
+    }
+}
+
+impl From<&CellStyle> for ParsedFont {
+    fn from(style: &CellStyle) -> Self {
+        Self {
+            font_size: style.font_size,
+            font_family: style.font_family.clone(),
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            strikethrough: style.strikethrough,
+            color: style.text_color,
+        }
+    }
+}
+
+impl ParsedFont {
+    fn read_property(&mut self, event: &BytesStart<'_>, decoder: quick_xml::encoding::Decoder) -> Result<(), XlsxError> {
+        match event.local_name().as_ref() {
+            b"sz" => {
+                if let Some(size) = attr_value(event, b"val", decoder)?
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|size| size.is_finite() && *size > 0.0 && *size <= f64::from(u16::MAX))
+                {
+                    // The native model stores whole points; round fractional XLSX sizes.
+                    self.font_size = size.round().max(1.0) as u16;
+                }
+            }
+            b"name" => {
+                if let Some(family) = attr_value(event, b"val", decoder)? {
+                    self.font_family = family;
+                }
+            }
+            b"b" | b"i" | b"strike" => {
+                let enabled = !matches!(attr_value(event, b"val", decoder)?.as_deref(), Some("0" | "false"));
+                match event.local_name().as_ref() {
+                    b"b" => self.bold = enabled,
+                    b"i" => self.italic = enabled,
+                    _ => self.strikethrough = enabled,
+                }
+            }
+            b"u" => {
+                self.underline = attr_value(event, b"val", decoder)?.as_deref() != Some("none");
+            }
+            b"color" => {
+                if let Some(rgb) = attr_value(event, b"rgb", decoder)? {
+                    self.color = parse_hex_rgb(&rgb);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -424,18 +485,14 @@ fn parse_styles(xml: &str) -> Result<Vec<CellStyle>, XlsxError> {
 
     loop {
         match reader.read_event() {
+            Ok(Event::Start(event) | Event::Empty(event)) if in_font => {
+                cur_font.read_property(&event, reader.decoder())?;
+            }
             Ok(Event::Start(event)) => match event.local_name().as_ref() {
                 b"fonts" => in_fonts = true,
                 b"font" if in_fonts => {
                     in_font = true;
                     cur_font = ParsedFont::default();
-                }
-                b"b" if in_font => cur_font.bold = true,
-                b"i" if in_font => cur_font.italic = true,
-                b"color" if in_font => {
-                    if let Some(rgb) = attr_value(&event, b"rgb", reader.decoder())? {
-                        cur_font.color = parse_hex_rgb(&rgb);
-                    }
                 }
                 b"fills" => in_fills = true,
                 b"fill" if in_fills => {
@@ -475,13 +532,7 @@ fn parse_styles(xml: &str) -> Result<Vec<CellStyle>, XlsxError> {
                 _ => {}
             },
             Ok(Event::Empty(event)) => match event.local_name().as_ref() {
-                b"b" if in_font => cur_font.bold = true,
-                b"i" if in_font => cur_font.italic = true,
-                b"color" if in_font => {
-                    if let Some(rgb) = attr_value(&event, b"rgb", reader.decoder())? {
-                        cur_font.color = parse_hex_rgb(&rgb);
-                    }
-                }
+                b"font" if in_fonts => fonts.push(ParsedFont::default()),
                 b"fgColor" if in_fill => {
                     if let Some(rgb) = attr_value(&event, b"rgb", reader.decoder())? {
                         cur_fill.bg_color = parse_hex_rgb(&rgb);
@@ -535,7 +586,7 @@ fn parse_styles(xml: &str) -> Result<Vec<CellStyle>, XlsxError> {
 
     let mut styles = Vec::new();
     for (font_id, fill_id, num_fmt_id, align) in cell_xfs {
-        let font = fonts.get(font_id);
+        let font = fonts.get(font_id).cloned().unwrap_or_default();
         let fill = fills.get(fill_id);
         let num_format = match num_fmt_id {
             1..=4 => NumFormat::Number,
@@ -545,9 +596,13 @@ fn parse_styles(xml: &str) -> Result<Vec<CellStyle>, XlsxError> {
             _ => NumFormat::General,
         };
         styles.push(CellStyle {
-            bold: font.map(|f| f.bold).unwrap_or(false),
-            italic: font.map(|f| f.italic).unwrap_or(false),
-            text_color: font.and_then(|f| f.color),
+            font_size: font.font_size,
+            font_family: font.font_family,
+            bold: font.bold,
+            italic: font.italic,
+            underline: font.underline,
+            strikethrough: font.strikethrough,
+            text_color: font.color,
             bg_color: fill.and_then(|f| f.bg_color),
             align,
             num_format,
@@ -579,11 +634,11 @@ impl StyleRegistry {
     }
 
     fn to_styles_xml(&self) -> String {
-        let mut fonts: Vec<(bool, bool, Option<[u8; 3]>)> = vec![(false, false, None)];
+        let mut fonts = vec![ParsedFont::default()];
         let mut fills: Vec<Option<[u8; 3]>> = vec![None, None];
 
         for style in &self.styles {
-            let f = (style.bold, style.italic, style.text_color);
+            let f = ParsedFont::from(style);
             if !fonts.contains(&f) {
                 fonts.push(f);
             }
@@ -599,15 +654,25 @@ impl StyleRegistry {
         );
 
         xml.push_str(&format!("<fonts count=\"{}\">", fonts.len()));
-        for &(b, i, col) in &fonts {
-            xml.push_str("<font><sz val=\"11\"/><name val=\"Calibri\"/>");
-            if b {
+        for font in &fonts {
+            xml.push_str(&format!(
+                "<font><sz val=\"{}\"/><name val=\"{}\"/>",
+                font.font_size,
+                xml_escape(&font.font_family)
+            ));
+            if font.bold {
                 xml.push_str("<b/>");
             }
-            if i {
+            if font.italic {
                 xml.push_str("<i/>");
             }
-            if let Some([r, g, b_val]) = col {
+            if font.underline {
+                xml.push_str("<u/>");
+            }
+            if font.strikethrough {
+                xml.push_str("<strike/>");
+            }
+            if let Some([r, g, b_val]) = font.color {
                 xml.push_str(&format!("<color rgb=\"FF{:02X}{:02X}{:02X}\"/>", r, g, b_val));
             }
             xml.push_str("</font>");
@@ -632,9 +697,10 @@ impl StyleRegistry {
 
         xml.push_str(&format!("<cellXfs count=\"{}\">", self.styles.len()));
         for style in &self.styles {
+            let font = ParsedFont::from(style);
             let font_id = fonts
                 .iter()
-                .position(|f| *f == (style.bold, style.italic, style.text_color))
+                .position(|f| *f == font)
                 .unwrap_or(0);
             let fill_id = if let Some(bg) = style.bg_color {
                 fills.iter().position(|f| *f == Some(bg)).unwrap_or(0)
@@ -749,7 +815,11 @@ fn worksheet_xml(sheet: &Sheet, registry: &StyleRegistry) -> String {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="18"/><sheetData>"#,
     );
     let mut current_row = 0;
-    for (address, value) in sheet.cells() {
+    let addresses: BTreeSet<_> = sheet.cells().map(|(address, _)| address)
+        .chain(sheet.styles().map(|(address, _)| address))
+        .collect();
+    for address in addresses {
+        let value = sheet.get(address);
         if address.row != current_row {
             if current_row != 0 {
                 xml.push_str("</row>");
@@ -769,7 +839,7 @@ fn worksheet_xml(sheet: &Sheet, registry: &StyleRegistry) -> String {
             String::new()
         };
         match value {
-            CellValue::Blank => {}
+            CellValue::Blank => xml.push_str(&format!("<c r=\"{reference}\"{s_attr}/>")),
             CellValue::Text(text) => xml.push_str(&format!(
                 "<c r=\"{reference}\"{s_attr} t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
                 xml_escape(text)
@@ -847,8 +917,12 @@ mod tests {
         let mut workbook = Workbook::default();
         let a1 = CellAddress::parse("A1").unwrap();
         let style = CellStyle {
+            font_size: 18,
+            font_family: "Arial".into(),
             bold: true,
             italic: true,
+            underline: true,
+            strikethrough: true,
             text_color: Some([0, 100, 200]),
             bg_color: Some([240, 248, 255]),
             align: CellAlign::Center,
@@ -860,10 +934,144 @@ mod tests {
         save(&path, &workbook).unwrap();
         let loaded = load(&path).unwrap();
         let loaded_style = loaded.sheets[0].get_style(a1).expect("style should be preserved");
-        assert_eq!(loaded_style.bold, true);
-        assert_eq!(loaded_style.italic, true);
-        assert_eq!(loaded_style.align, CellAlign::Center);
-        assert_eq!(loaded_style.num_format, NumFormat::Currency);
+        assert_eq!(loaded_style, &style);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn xlsx_round_trip_preserves_typography_on_populated_and_blank_cells() {
+        let path = temp_path();
+        let mut workbook = Workbook::default();
+        let styles = [
+            CellStyle { font_size: 22, ..CellStyle::default() },
+            CellStyle { font_family: "Tiếng Việt & <Font> \"A\" 'B'".into(), ..CellStyle::default() },
+            CellStyle { underline: true, ..CellStyle::default() },
+            CellStyle { strikethrough: true, ..CellStyle::default() },
+            CellStyle {
+                font_size: 14,
+                font_family: "Calibri".into(),
+                underline: true,
+                strikethrough: true,
+                ..CellStyle::default()
+            },
+        ];
+        for (index, style) in styles.iter().enumerate() {
+            let row = index as u32 + 1;
+            let populated = CellAddress::new(row, 1).unwrap();
+            let blank = CellAddress::new(row, 3).unwrap();
+            workbook.active_mut().set(populated, CellValue::Text("Typography".into()));
+            workbook.active_mut().set_style(populated, style.clone());
+            workbook.active_mut().set_style(blank, style.clone());
+        }
+        let plain = CellAddress::parse("B1").unwrap();
+        workbook.active_mut().set(plain, CellValue::Number(42.0));
+        let blank_sheet = workbook.add_sheet("Blank typography");
+        let last_cell = CellAddress::parse("XFD1048576").unwrap();
+        workbook.sheets[blank_sheet].set_style(last_cell, styles[4].clone());
+
+        save(&path, &workbook).unwrap();
+        let mut archive = ZipArchive::new(File::open(&path).unwrap()).unwrap();
+        let styles_xml = read_entry(&mut archive, "xl/styles.xml").unwrap();
+        // Reusing a font on blank cells or another sheet must not duplicate it.
+        assert!(styles_xml.contains("<fonts count=\"6\">"));
+        drop(archive);
+
+        let loaded = load(&path).unwrap();
+        for (index, style) in styles.iter().enumerate() {
+            let row = index as u32 + 1;
+            let populated = CellAddress::new(row, 1).unwrap();
+            let blank = CellAddress::new(row, 3).unwrap();
+            assert_eq!(loaded.sheets[0].get_style(populated), Some(style));
+            assert_eq!(loaded.sheets[0].get(populated), &CellValue::Text("Typography".into()));
+            assert_eq!(loaded.sheets[0].get_style(blank), Some(style));
+            assert_eq!(loaded.sheets[0].get(blank), &CellValue::Blank);
+        }
+        assert!(loaded.sheets[0].get_style(plain).is_none());
+        assert_eq!(loaded.sheets[0].get(plain), &CellValue::Number(42.0));
+        assert_eq!(loaded.sheets[blank_sheet].get_style(last_cell), Some(&styles[4]));
+        assert_eq!(loaded.sheets[blank_sheet].populated_cell_count(), 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parses_font_properties_and_explicitly_disabled_decorations() {
+        let styles = parse_styles(r#"
+            <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <fonts count="4">
+                    <font/>
+                    <font>
+                        <sz val="14.0"></sz><name val="Calibri &amp; Friends"></name>
+                        <b></b><i val="true"></i><u val="double"></u><strike val="1"></strike>
+                        <color rgb="FF123456"></color>
+                    </font>
+                    <font><b val="0"/><i val="false"/><u val="none"/><strike val="false"/></font>
+                    <font><b val="false"></b><i val="0"></i><u val="none"></u><strike val="0"></strike></font>
+                </fonts>
+                <cellXfs count="4">
+                    <xf fontId="0"/><xf fontId="1"/><xf fontId="2"/><xf fontId="3"/>
+                </cellXfs>
+            </styleSheet>"#).unwrap();
+        assert_eq!(styles[0], CellStyle::default());
+        assert_eq!(styles[1], CellStyle {
+            font_size: 14,
+            font_family: "Calibri & Friends".into(),
+            bold: true,
+            italic: true,
+            underline: true,
+            strikethrough: true,
+            text_color: Some([0x12, 0x34, 0x56]),
+            ..CellStyle::default()
+        });
+        assert_eq!(styles[2], CellStyle::default());
+        assert_eq!(styles[3], CellStyle::default());
+    }
+
+    #[test]
+    fn missing_or_invalid_font_properties_use_native_defaults() {
+        for size in [None, Some(""), Some("invalid"), Some("NaN"), Some("inf"), Some("0"), Some("-1"), Some("65536")] {
+            let property = size.map(|size| format!("<sz val=\"{size}\"/>")).unwrap_or_default();
+            let xml = format!(
+                "<styleSheet><fonts><font>{property}</font></fonts><cellXfs><xf fontId=\"0\"/><xf fontId=\"99\"/></cellXfs></styleSheet>"
+            );
+            assert_eq!(parse_styles(&xml).unwrap(), vec![CellStyle::default(); 2], "size: {size:?}");
+        }
+    }
+
+    #[test]
+    fn fractional_font_sizes_round_to_whole_points() {
+        for (size, expected) in [("10.4", 10), ("10.5", 11), ("0.1", 1), ("65535", u16::MAX)] {
+            let xml = format!(
+                "<styleSheet><fonts><font><sz val=\"{size}\"/></font></fonts><cellXfs><xf fontId=\"0\"/></cellXfs></styleSheet>"
+            );
+            assert_eq!(parse_styles(&xml).unwrap()[0].font_size, expected);
+        }
+    }
+
+    #[test]
+    fn implicit_style_zero_preserves_workbook_default_typography() {
+        let styles = parse_styles(r#"
+            <styleSheet><fonts><font><sz val="11"/><name val="Calibri"/><u/><strike/></font></fonts>
+                <cellXfs><xf fontId="0"/></cellXfs>
+            </styleSheet>"#).unwrap();
+        let xml = r#"<worksheet><sheetData><row r="1"><c r="A1"><v>7</v></c><c r="B1"/></row></sheetData></worksheet>"#;
+        let sheet = parse_worksheet("Default typography", xml, &[], &styles).unwrap();
+        assert_eq!(styles[0], CellStyle {
+            font_size: 11,
+            font_family: "Calibri".into(),
+            underline: true,
+            strikethrough: true,
+            ..CellStyle::default()
+        });
+        assert_eq!(sheet.get_style(CellAddress::parse("A1").unwrap()), Some(&styles[0]));
+        assert_eq!(sheet.get_style(CellAddress::parse("B1").unwrap()), Some(&styles[0]));
+
+        let path = temp_path();
+        let mut workbook = Workbook::default();
+        workbook.sheets = vec![sheet];
+        save(&path, &workbook).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.sheets[0].get_style(CellAddress::parse("A1").unwrap()), Some(&styles[0]));
+        assert_eq!(loaded.sheets[0].get_style(CellAddress::parse("B1").unwrap()), Some(&styles[0]));
         fs::remove_file(path).unwrap();
     }
 

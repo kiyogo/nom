@@ -1365,10 +1365,12 @@ dependencies = [
 name = "nom-sheet"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "eframe",
  "nom-formula",
  "nom-workbook",
  "nom-xlsx",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

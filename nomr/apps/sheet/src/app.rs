@@ -2,21 +2,23 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+mod appearance;
+mod dialogs;
+mod grid;
+mod icons;
+mod ribbon;
+use appearance::setup_sheet_appearance;
+
 use eframe::egui::{
-    self, Align2, Color32, Context, FontData, FontDefinitions, FontFamily, Key, Pos2, Rect, RichText, Rounding,
-    ScrollArea, Stroke, Ui, Vec2,
+    self, Align2, Color32, Context, FontFamily, Key, Pos2, Rect, RichText, Rounding, ScrollArea, Stroke, Ui, Vec2,
 };
 use nom_formula::FormulaContext;
 use nom_workbook::{
     CellAddress, CellAlign, CellRange, CellStyle, CellValue, NumFormat, Sheet, Workbook, MAX_COLUMNS, MAX_ROWS,
 };
 
-const ROW_HEIGHT: f32 = 22.0;
-const COLUMN_WIDTH: f32 = 76.0;
-const ROW_HEADER_WIDTH: f32 = 40.0;
 const FORMULA_DEPTH_LIMIT: usize = 500;
 const RANGE_CELL_LIMIT: u64 = 100_000;
-const EXCEL_GREEN: Color32 = Color32::from_rgb(33, 115, 70);
 const RIBBON_TEXT: Color32 = Color32::from_rgb(32, 31, 30);
 const RIBBON_MUTED: Color32 = Color32::from_rgb(96, 94, 92);
 const RIBBON_BORDER: Color32 = Color32::from_rgb(218, 220, 224);
@@ -92,74 +94,11 @@ pub struct NomSheetApp {
     rename_sheet_idx: Option<usize>,
     rename_sheet_buffer: String,
     chart: Option<ChartItem>,
-}
-
-fn setup_sheet_appearance(context: &Context) {
-    let mut fonts = FontDefinitions::default();
-    for path in [r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\arial.ttf"] {
-        if let Ok(data) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "nom_sheet_vietnamese".to_owned(),
-                std::sync::Arc::new(FontData::from_owned(data)),
-            );
-            fonts
-                .families
-                .entry(FontFamily::Proportional)
-                .or_default()
-                .insert(0, "nom_sheet_vietnamese".to_owned());
-            break;
-        }
-    }
-    context.set_fonts(fonts);
-
-    let mut visuals = egui::Visuals::light();
-    visuals.override_text_color = Some(Color32::from_rgb(15, 23, 42));
-    visuals.widgets.inactive.bg_fill = Color32::WHITE;
-    visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, RIBBON_TEXT);
-    visuals.widgets.inactive.rounding = Rounding::same(3.0);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(235, 235, 235);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, RIBBON_BORDER);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, RIBBON_TEXT);
-    visuals.widgets.hovered.rounding = Rounding::same(3.0);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(226, 239, 228);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, EXCEL_GREEN);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, RIBBON_TEXT);
-    visuals.widgets.active.rounding = Rounding::same(3.0);
-    visuals.panel_fill = Color32::WHITE;
-    visuals.window_fill = Color32::WHITE;
-    visuals.faint_bg_color = Color32::from_rgb(248, 248, 248);
-    visuals.extreme_bg_color = Color32::WHITE;
-    context.set_visuals(visuals);
-
-    let mut style = (*context.style()).clone();
-    style.spacing.item_spacing = Vec2::new(4.0, 3.0);
-    style.spacing.button_padding = Vec2::new(5.0, 3.0);
-    context.set_style(style);
-}
-
-fn ribbon_group(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
-    ui.vertical(|ui| {
-        contents(ui);
-        ui.add_space(3.0);
-        ui.label(RichText::new(title).size(9.5).color(RIBBON_MUTED));
-    });
-    ui.add_space(3.0);
-    let (separator, _) = ui.allocate_exact_size(Vec2::new(1.0, 44.0), egui::Sense::hover());
-    ui.painter().line_segment(
-        [separator.center_top(), separator.center_bottom()],
-        Stroke::new(1.0_f32, RIBBON_BORDER),
-    );
-    ui.add_space(2.0);
-}
-
-fn ribbon_button(ui: &mut Ui, label: &str, width: f32, tooltip: &str) -> bool {
-    ui.add_sized(
-        [width, 25.0],
-        egui::Button::new(RichText::new(label).size(11.5).color(RIBBON_TEXT)),
-    )
-    .on_hover_text(tooltip)
-    .clicked()
+    grid_scroll: Vec2,
+    reveal_selection: bool,
+    edit_focus_requested: bool,
+    show_capabilities: bool,
+    formula_is_focused: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -272,6 +211,11 @@ impl NomSheetApp {
             rename_sheet_idx: None,
             rename_sheet_buffer: String::new(),
             chart: None,
+            grid_scroll: Vec2::ZERO,
+            reveal_selection: true,
+            edit_focus_requested: false,
+            show_capabilities: false,
+            formula_is_focused: false,
         };
         if let Some(path) = initial_file {
             app.path_buffer = path.display().to_string();
@@ -323,6 +267,10 @@ impl NomSheetApp {
     }
 
     fn save_path(&mut self) {
+        if self.path_buffer.trim().is_empty() {
+            self.choose_save_file();
+            return;
+        }
         let extension = PathBuf::from(self.path_buffer.trim())
             .extension()
             .and_then(|value| value.to_str())
@@ -500,11 +448,16 @@ impl NomSheetApp {
         self.selected = address;
         self.selection_end = None;
         self.editing_cell = false;
+        self.reveal_selection = true;
         self.refresh_bars();
     }
 
     fn copy_to_clipboard(&mut self, context: &Context) {
         let range = self.selection_range();
+        if range.cell_count() > RANGE_CELL_LIMIT {
+            self.status = "Chọn tối đa 100.000 ô để sao chép".into();
+            return;
+        }
         let tsv = nom_workbook::export_tsv(self.workbook.active(), range);
         self.internal_clipboard = tsv.clone();
         context.output_mut(|o| o.copied_text = tsv);
@@ -512,6 +465,10 @@ impl NomSheetApp {
     }
 
     fn cut_to_clipboard(&mut self, context: &Context) {
+        if self.selection_range().cell_count() > RANGE_CELL_LIMIT {
+            self.status = "Chọn tối đa 100.000 ô để cắt".into();
+            return;
+        }
         self.copy_to_clipboard(context);
         let range = self.selection_range();
         let mut before = Vec::new();
@@ -577,6 +534,10 @@ impl NomSheetApp {
         F: FnMut(&mut CellStyle),
     {
         let range = self.selection_range();
+        if range.cell_count() > RANGE_CELL_LIMIT {
+            self.status = "Chọn tối đa 100.000 ô để định dạng cùng lúc".into();
+            return;
+        }
         let mut before = Vec::new();
         let mut after = Vec::new();
 
@@ -601,6 +562,10 @@ impl NomSheetApp {
 
     fn clear_selection(&mut self) {
         let range = self.selection_range();
+        if range.cell_count() > RANGE_CELL_LIMIT {
+            self.status = "Chọn tối đa 100.000 ô để xóa cùng lúc".into();
+            return;
+        }
         let mut before = Vec::new();
         let mut after = Vec::new();
         for row in range.iter_rows() {
@@ -623,6 +588,10 @@ impl NomSheetApp {
 
     fn sort_selection(&mut self, ascending: bool) {
         let range = self.selection_range();
+        if range.cell_count() > RANGE_CELL_LIMIT {
+            self.status = "Chọn tối đa 100.000 ô để sắp xếp".into();
+            return;
+        }
         let sort_col = self.selected.column;
         let mut rows_data = Vec::new();
 
@@ -691,7 +660,14 @@ impl NomSheetApp {
     }
 
     fn handle_keyboard(&mut self, context: &Context) {
-        if self.editing_cell || self.path_is_focused || self.name_box_is_focused || self.search_is_focused {
+        if self.editing_cell
+            || self.path_is_focused
+            || self.name_box_is_focused
+            || self.search_is_focused
+            || self.formula_is_focused
+            || self.show_find_dialog
+            || self.rename_sheet_idx.is_some()
+        {
             return;
         }
 
@@ -730,6 +706,8 @@ impl NomSheetApp {
                 self.apply_style_to_selection("In đậm", |s| s.bold = !s.bold);
             } else if ctrl && input.key_pressed(Key::I) {
                 self.apply_style_to_selection("In nghiêng", |s| s.italic = !s.italic);
+            } else if ctrl && input.key_pressed(Key::U) {
+                self.apply_style_to_selection("Gạch chân", |s| s.underline = !s.underline);
             } else if ctrl && input.key_pressed(Key::F) {
                 self.show_find_dialog = true;
             } else if ctrl && input.key_pressed(Key::A) {
@@ -745,15 +723,17 @@ impl NomSheetApp {
             } else if ctrl && input.key_pressed(Key::S) {
                 self.save_path();
             } else if ctrl && input.key_pressed(Key::O) {
-                self.request_open();
+                self.choose_open_file();
             } else if ctrl && input.key_pressed(Key::N) {
                 self.request_new();
             } else if input.key_pressed(Key::Delete) {
                 self.clear_selection();
             } else if input.key_pressed(Key::F2) {
                 self.editing_cell = true;
+                self.edit_focus_requested = true;
             } else if input.key_pressed(Key::Enter) {
                 self.editing_cell = true;
+                self.edit_focus_requested = true;
             } else if input.key_pressed(Key::Escape) {
                 self.editing_cell = false;
                 self.refresh_bars();
@@ -776,6 +756,29 @@ impl NomSheetApp {
             }
         });
 
+        if next_cell.is_none()
+            && !self.editing_cell
+            && !context.input(|i| i.modifiers.ctrl || i.modifiers.alt || i.modifiers.command)
+            && !context.wants_keyboard_input()
+        {
+            let text = context.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| {
+                        if let egui::Event::Text(t) = e {
+                            Some(t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<String>()
+            });
+            if !text.is_empty() {
+                self.edit_buffer.clear();
+                self.editing_cell = true;
+                self.edit_focus_requested = true;
+            }
+        }
         if let Some((row, column)) = next_cell {
             let addr = CellAddress { row, column };
             if expand_selection {
@@ -801,670 +804,16 @@ impl eframe::App for NomSheetApp {
         }
         self.handle_keyboard(context);
 
-        let mut open_requested = false;
-        let mut save_requested = false;
-        let mut new_requested = false;
-
-        // Excel-style title bar and quick access toolbar.
-        let workbook_title = PathBuf::from(self.path_buffer.trim())
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Sổ làm việc1".to_owned());
-        egui::TopBottomPanel::top("sheet_title_bar")
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::WHITE)
-                    .inner_margin(egui::Margin::symmetric(12.0, 4.0)),
-            )
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(25.0), egui::Sense::hover());
-                    ui.painter().rect_filled(icon_rect, Rounding::same(4.0), EXCEL_GREEN);
-                    ui.painter().text(
-                        icon_rect.center(),
-                        Align2::CENTER_CENTER,
-                        "N",
-                        egui::FontId::proportional(14.0),
-                        Color32::WHITE,
-                    );
-                    if ui
-                        .small_button("Mới")
-                        .on_hover_text("Sổ làm việc mới · Ctrl+N")
-                        .clicked()
-                    {
-                        new_requested = true;
-                    }
-                    if ui.small_button("Hoàn tác").on_hover_text("Hoàn tác · Ctrl+Z").clicked() {
-                        self.undo();
-                    }
-                    if ui.small_button("Làm lại").on_hover_text("Làm lại · Ctrl+Y").clicked() {
-                        self.redo();
-                    }
-                    if ui.small_button("Lưu").on_hover_text("Lưu · Ctrl+S").clicked() {
-                        save_requested = true;
-                    }
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!(
-                            "{}{}",
-                            workbook_title,
-                            if self.workbook.dirty { " •" } else { "" }
-                        ))
-                        .strong()
-                        .size(13.0)
-                        .color(RIBBON_TEXT),
-                    );
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Tìm").clicked() {
-                            self.show_find_dialog = true;
-                        }
-                        let search = ui.add_sized(
-                            [250.0, 26.0],
-                            egui::TextEdit::singleline(&mut self.find_query).hint_text("Tìm kiếm trong sheet"),
-                        );
-                        self.search_is_focused = search.has_focus();
-                        if search.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
-                            self.show_find_dialog = true;
-                        }
-                    });
-                });
-            });
-
-        if new_requested {
-            self.request_new();
-        }
-        if save_requested {
-            self.save_path();
-        }
-
-        // Excel-style ribbon tabs.
-        egui::TopBottomPanel::top("sheet_ribbon_tabs")
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(250, 250, 250))
-                    .inner_margin(egui::Margin::symmetric(10.0, 0.0)),
-            )
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    let tabs = [
-                        (RibbonTab::File, "Tệp"),
-                        (RibbonTab::Home, "Trang chủ"),
-                        (RibbonTab::Insert, "Chèn"),
-                        (RibbonTab::Draw, "Vẽ"),
-                        (RibbonTab::PageLayout, "Bố trí trang"),
-                        (RibbonTab::Formulas, "Công thức"),
-                        (RibbonTab::Data, "Dữ liệu"),
-                        (RibbonTab::Review, "Xem lại"),
-                        (RibbonTab::View, "Xem"),
-                        (RibbonTab::Help, "Trợ giúp"),
-                    ];
-                    for (tab, title) in tabs {
-                        let active = self.active_ribbon_tab == tab;
-                        let color = if active || tab == RibbonTab::File {
-                            EXCEL_GREEN
-                        } else {
-                            RIBBON_TEXT
-                        };
-                        let width = match tab {
-                            RibbonTab::Home => 76.0,
-                            RibbonTab::Formulas | RibbonTab::PageLayout => 82.0,
-                            _ => 58.0,
-                        };
-                        let response = ui.add_sized(
-                            [width, 30.0],
-                            egui::Button::new(RichText::new(title).size(12.0).color(color))
-                                .fill(if active { Color32::WHITE } else { Color32::TRANSPARENT })
-                                .stroke(Stroke::NONE)
-                                .rounding(Rounding::ZERO),
-                        );
-                        if active {
-                            let underline = Rect::from_min_max(
-                                Pos2::new(response.rect.left() + 5.0, response.rect.bottom() - 2.0),
-                                Pos2::new(response.rect.right() - 5.0, response.rect.bottom()),
-                            );
-                            ui.painter().rect_filled(underline, Rounding::ZERO, EXCEL_GREEN);
-                        }
-                        if response.clicked() {
-                            self.active_ribbon_tab = tab;
-                        }
-                    }
-                });
-            });
-
-        // Ribbon groups: compact, responsive, and no overlay scrollbar.
-        egui::TopBottomPanel::top("sheet_ribbon_toolbar")
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(247, 247, 247))
-                    .stroke(Stroke::new(1.0_f32, RIBBON_BORDER))
-                    .inner_margin(egui::Margin::symmetric(10.0, 5.0)),
-            )
-            .show(context, |ui| {
-                ui.horizontal_wrapped(|ui| match self.active_ribbon_tab {
-                    RibbonTab::File => {
-                        ribbon_group(ui, "Sổ làm việc", |ui| {
-                            ui.horizontal(|ui| {
-                                if ribbon_button(ui, "Mới", 44.0, "Tạo sổ làm việc mới") {
-                                    new_requested = true;
-                                }
-                                if ribbon_button(ui, "Mở", 44.0, "Mở tệp theo đường dẫn bên cạnh") {
-                                    open_requested = true;
-                                }
-                                if ribbon_button(ui, "Lưu", 44.0, "Lưu sổ làm việc") {
-                                    save_requested = true;
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Đường dẫn tệp", |ui| {
-                            ui.horizontal(|ui| {
-                                let response = ui.add_sized(
-                                    [360.0, 25.0],
-                                    egui::TextEdit::singleline(&mut self.path_buffer)
-                                        .hint_text("Đường dẫn .xlsx hoặc .csv"),
-                                );
-                                self.path_is_focused = response.has_focus();
-                                if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
-                                    open_requested = true;
-                                }
-                                if ribbon_button(ui, "Đi tới", 48.0, "Mở tệp theo đường dẫn") {
-                                    open_requested = true;
-                                }
-                            });
-                        });
-                    }
-                    RibbonTab::Home => {
-                        ribbon_group(ui, "Bảng tạm", |ui| {
-                            ui.horizontal(|ui| {
-                                if ribbon_button(ui, "Dán", 42.0, "Dán · Ctrl+V") {
-                                    let clip = self.internal_clipboard.clone();
-                                    self.paste_from_clipboard(&clip);
-                                }
-                                if ribbon_button(ui, "Cắt", 42.0, "Cắt · Ctrl+X") {
-                                    self.cut_to_clipboard(context);
-                                }
-                                if ribbon_button(ui, "Chép", 46.0, "Sao chép · Ctrl+C") {
-                                    self.copy_to_clipboard(context);
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Hoàn tác", |ui| {
-                            ui.horizontal(|ui| {
-                                if ribbon_button(ui, "Hoàn tác", 62.0, "Hoàn tác · Ctrl+Z") {
-                                    self.undo();
-                                }
-                                if ribbon_button(ui, "Làm lại", 58.0, "Làm lại · Ctrl+Y") {
-                                    self.redo();
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Phông chữ", |ui| {
-                            ui.horizontal(|ui| {
-                                if ribbon_button(ui, "B", 30.0, "In đậm · Ctrl+B") {
-                                    self.apply_style_to_selection("In đậm", |style| style.bold = !style.bold);
-                                }
-                                if ribbon_button(ui, "I", 30.0, "In nghiêng · Ctrl+I") {
-                                    self.apply_style_to_selection("In nghiêng", |style| style.italic = !style.italic);
-                                }
-                                ui.menu_button(RichText::new("Màu chữ").color(RIBBON_TEXT), |ui| {
-                                    for (rgb, name) in [
-                                        ([31, 31, 31], "Đen"),
-                                        ([192, 0, 0], "Đỏ"),
-                                        ([0, 112, 192], "Xanh dương"),
-                                        ([0, 128, 96], "Xanh lá"),
-                                        ([112, 48, 160], "Tím"),
-                                    ] {
-                                        if ui
-                                            .button(
-                                                RichText::new("A")
-                                                    .strong()
-                                                    .color(Color32::from_rgb(rgb[0], rgb[1], rgb[2])),
-                                            )
-                                            .on_hover_text(name)
-                                            .clicked()
-                                        {
-                                            self.apply_style_to_selection(name, |style| style.text_color = Some(rgb));
-                                            ui.close_menu();
-                                        }
-                                    }
-                                });
-                                ui.menu_button(RichText::new("Tô nền").color(RIBBON_TEXT), |ui| {
-                                    for (rgb, name) in [
-                                        ([255, 242, 204], "Vàng nhạt"),
-                                        ([221, 235, 247], "Xanh dương nhạt"),
-                                        ([226, 240, 217], "Xanh lá nhạt"),
-                                        ([252, 228, 214], "Cam nhạt"),
-                                        ([255, 255, 255], "Trắng"),
-                                    ] {
-                                        if ui
-                                            .button(RichText::new("■").color(Color32::from_rgb(rgb[0], rgb[1], rgb[2])))
-                                            .on_hover_text(name)
-                                            .clicked()
-                                        {
-                                            self.apply_style_to_selection(name, |style| style.bg_color = Some(rgb));
-                                            ui.close_menu();
-                                        }
-                                    }
-                                });
-                            });
-                        });
-                        ribbon_group(ui, "Căn chỉnh", |ui| {
-                            ui.horizontal(|ui| {
-                                for (label, align, hint) in [
-                                    ("Trái", CellAlign::Left, "Căn trái"),
-                                    ("Giữa", CellAlign::Center, "Căn giữa"),
-                                    ("Phải", CellAlign::Right, "Căn phải"),
-                                ] {
-                                    if ribbon_button(ui, label, 36.0, hint) {
-                                        self.apply_style_to_selection(hint, |style| style.align = align);
-                                    }
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Định dạng số", |ui| {
-                            ui.horizontal(|ui| {
-                                for (label, format, hint, width) in [
-                                    ("Tổng quát", NumFormat::General, "Định dạng tổng quát", 64.0),
-                                    ("123", NumFormat::Number, "Định dạng số", 38.0),
-                                    ("$", NumFormat::Currency, "Định dạng tiền tệ", 30.0),
-                                    ("%", NumFormat::Percentage, "Định dạng phần trăm", 30.0),
-                                    ("Ngày", NumFormat::Date, "Định dạng ngày", 42.0),
-                                ] {
-                                    if ribbon_button(ui, label, width, hint) {
-                                        self.apply_style_to_selection(hint, |style| style.num_format = format);
-                                    }
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Ô", |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                if ribbon_button(ui, "+ Hàng", 48.0, "Chèn hàng") {
-                                    let row = self.selected.row;
-                                    self.workbook.active_mut().insert_row(row);
-                                    self.workbook.dirty = true;
-                                    self.refresh_bars();
-                                }
-                                if ribbon_button(ui, "− Hàng", 48.0, "Xóa hàng") {
-                                    let row = self.selected.row;
-                                    self.workbook.active_mut().delete_row(row);
-                                    self.workbook.dirty = true;
-                                    self.refresh_bars();
-                                }
-                                if ribbon_button(ui, "+ Cột", 44.0, "Chèn cột") {
-                                    let column = self.selected.column;
-                                    self.workbook.active_mut().insert_column(column);
-                                    self.workbook.dirty = true;
-                                    self.refresh_bars();
-                                }
-                                if ribbon_button(ui, "− Cột", 44.0, "Xóa cột") {
-                                    let column = self.selected.column;
-                                    self.workbook.active_mut().delete_column(column);
-                                    self.workbook.dirty = true;
-                                    self.refresh_bars();
-                                }
-                                if ribbon_button(ui, "Xóa", 38.0, "Xóa nội dung vùng chọn") {
-                                    self.clear_selection();
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Chỉnh sửa", |ui| {
-                            ui.horizontal(|ui| {
-                                if ribbon_button(ui, "A-Z", 40.0, "Sắp xếp tăng dần") {
-                                    self.sort_selection(true);
-                                }
-                                if ribbon_button(ui, "Z-A", 40.0, "Sắp xếp giảm dần") {
-                                    self.sort_selection(false);
-                                }
-                                if ribbon_button(ui, "Tìm", 40.0, "Tìm và thay thế · Ctrl+F") {
-                                    self.show_find_dialog = true;
-                                }
-                            });
-                        });
-                    }
-                    RibbonTab::Insert => {
-                        ribbon_group(ui, "Biểu đồ", |ui| {
-                            ui.horizontal(|ui| {
-                                for (label, title, chart_type) in [
-                                    ("Cột", "Biểu đồ Cột", ChartType::Column),
-                                    ("Đường", "Biểu đồ Đường", ChartType::Line),
-                                    ("Thanh", "Biểu đồ Thanh", ChartType::Bar),
-                                    ("Tròn", "Biểu đồ Tròn", ChartType::Pie),
-                                ] {
-                                    if ribbon_button(ui, label, 52.0, title) {
-                                        self.chart = Some(ChartItem {
-                                            title: title.into(),
-                                            chart_type,
-                                            range: self.selection_range(),
-                                        });
-                                        self.status = format!("Đã tạo {title} từ vùng chọn");
-                                    }
-                                }
-                                if self.chart.is_some() && ribbon_button(ui, "Đóng", 44.0, "Đóng biểu đồ") {
-                                    self.chart = None;
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Trang tính", |ui| {
-                            if ribbon_button(ui, "+ Sheet", 58.0, "Thêm trang tính") {
-                                self.workbook.active_sheet = self.workbook.add_sheet("Sheet");
-                                self.workbook.dirty = true;
-                                self.selected = CellAddress { row: 1, column: 1 };
-                                self.selection_end = None;
-                                self.refresh_bars();
-                            }
-                        });
-                    }
-                    RibbonTab::Draw => {
-                        ribbon_group(ui, "Bút vẽ", |ui| {
-                            ui.horizontal(|ui| {
-                                for label in ["Bút", "Bút chì", "Tẩy", "Tô sáng"] {
-                                    ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.5)));
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Thao tác", |ui| {
-                            ui.label(RichText::new("Vẽ trên ô tính chưa khả dụng").size(11.0));
-                        });
-                    }
-                    RibbonTab::PageLayout => {
-                        ribbon_group(ui, "Thiết lập trang", |ui| {
-                            ui.horizontal(|ui| {
-                                for label in ["Lề", "Hướng", "Khổ giấy", "Khu vực in"] {
-                                    ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.5)));
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Tùy chọn trang tính", |ui| {
-                            let mut grid_toggle = self.show_gridlines;
-                            if ui.checkbox(&mut grid_toggle, "Đường lưới").changed() {
-                                self.show_gridlines = grid_toggle;
-                            }
-                        });
-                    }
-                    RibbonTab::Formulas => {
-                        ribbon_group(ui, "Thư viện hàm", |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                for function in ["SUM", "AVERAGE", "COUNT", "MAX", "MIN", "IF", "VLOOKUP", "ROUND"] {
-                                    if ribbon_button(ui, function, 62.0, &format!("Chèn hàm {function}")) {
-                                        self.formula_buffer = format!("={function}(");
-                                        self.edit_buffer = self.formula_buffer.clone();
-                                        self.editing_cell = true;
-                                    }
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Tính toán", |ui| {
-                            if ribbon_button(ui, "Tính lại", 64.0, "Tính lại công thức") {
-                                self.status = "Đã tính lại công thức bảng tính".into();
-                            }
-                        });
-                    }
-                    RibbonTab::Data => {
-                        ribbon_group(ui, "Sắp xếp", |ui| {
-                            ui.horizontal(|ui| {
-                                if ribbon_button(ui, "A-Z", 48.0, "Sắp xếp tăng dần") {
-                                    self.sort_selection(true);
-                                }
-                                if ribbon_button(ui, "Z-A", 48.0, "Sắp xếp giảm dần") {
-                                    self.sort_selection(false);
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Xuất dữ liệu", |ui| {
-                            if ribbon_button(ui, "Sao chép TSV", 92.0, "Sao chép sheet dưới dạng TSV") {
-                                let range = self.workbook.active().used_range().unwrap_or(self.selection_range());
-                                context.output_mut(|output| {
-                                    output.copied_text = nom_workbook::export_tsv(self.workbook.active(), range)
-                                });
-                                self.status = "Đã sao chép nội dung sheet dưới dạng CSV/TSV".into();
-                            }
-                        });
-                    }
-                    RibbonTab::Review => {
-                        ribbon_group(ui, "Kiểm lỗi", |ui| {
-                            if ribbon_button(ui, "Tìm & thay thế", 104.0, "Tìm và thay thế · Ctrl+F") {
-                                self.show_find_dialog = true;
-                            }
-                        });
-                        ribbon_group(ui, "Nhận xét và bảo vệ", |ui| {
-                            ui.horizontal(|ui| {
-                                for label in ["Nhận xét", "Bảo vệ sheet", "Bảo vệ sổ"] {
-                                    ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.5)));
-                                }
-                            });
-                        });
-                    }
-                    RibbonTab::View => {
-                        ribbon_group(ui, "Thu phóng", |ui| {
-                            ui.horizontal(|ui| {
-                                for (label, zoom) in [("Thu nhỏ", 0.75), ("100%", 1.0), ("Phóng to", 1.25)] {
-                                    if ribbon_button(ui, label, 44.0, &format!("Thu phóng {}%", (zoom * 100.0) as u32))
-                                    {
-                                        self.zoom = zoom;
-                                    }
-                                }
-                            });
-                        });
-                        ribbon_group(ui, "Hiển thị", |ui| {
-                            let mut grid_toggle = self.show_gridlines;
-                            if ui.checkbox(&mut grid_toggle, "Đường lưới").changed() {
-                                self.show_gridlines = grid_toggle;
-                            }
-                        });
-                    }
-                    RibbonTab::Help => {
-                        ribbon_group(ui, "Trợ giúp", |ui| {
-                            ui.label(RichText::new("Nom Sheet · Bảng tính tương thích XLSX/CSV").size(11.5));
-                        });
-                        ribbon_group(ui, "Phím tắt", |ui| {
-                            ui.label(RichText::new("Ctrl+N mới · Ctrl+O mở · Ctrl+S lưu · F2 sửa ô").size(11.0));
-                        });
-                    }
-                });
-            });
-
-        if new_requested {
-            self.request_new();
-        }
-        if open_requested {
-            self.request_open();
-        }
-        if save_requested {
-            self.save_path();
-        }
-
-        // Formula bar modeled after Excel's name box, cancel/commit controls, and fx input.
-        egui::TopBottomPanel::top("formula_bar")
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(250, 250, 250))
-                    .stroke(Stroke::new(1.0_f32, RIBBON_BORDER))
-                    .inner_margin(egui::Margin::symmetric(10.0, 4.0)),
-            )
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    let name_resp = ui.add_sized(
-                        [88.0, 26.0],
-                        egui::TextEdit::singleline(&mut self.name_box_buffer)
-                            .margin(Vec2::new(5.0, 2.0))
-                            .horizontal_align(egui::Align::Center),
-                    );
-                    self.name_box_is_focused = name_resp.has_focus();
-                    if name_resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                        if let Ok(addr) = CellAddress::parse(&self.name_box_buffer) {
-                            self.select_cell(addr);
-                        }
-                    }
-
-                    if ui.small_button("×").on_hover_text("Hủy sửa ô").clicked() {
-                        self.editing_cell = false;
-                        self.refresh_bars();
-                    }
-                    if ui.small_button("✓").on_hover_text("Xác nhận sửa ô").clicked() {
-                        self.edit_buffer = self.formula_buffer.clone();
-                        self.commit_edit();
-                    }
-                    ui.separator();
-                    ui.label(RichText::new("fx").italics().size(14.0).color(RIBBON_MUTED));
-
-                    let response = ui.add_sized(
-                        [ui.available_width().max(160.0), 26.0],
-                        egui::TextEdit::singleline(&mut self.formula_buffer).hint_text("Nhập giá trị hoặc công thức"),
-                    );
-                    if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
-                        self.edit_buffer = self.formula_buffer.clone();
-                        self.commit_edit();
-                    }
-                });
-            });
-
-        // 5. BOTTOM STATUS BAR
-        egui::TopBottomPanel::bottom("sheet_status")
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(243, 243, 243))
-                    .stroke(Stroke::new(1.0_f32, RIBBON_BORDER))
-                    .inner_margin(egui::Margin::symmetric(9.0, 3.0)),
-            )
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.status).color(RIBBON_MUTED));
-                    if self.workbook.dirty {
-                        ui.separator();
-                        ui.label(RichText::new("Chưa lưu").color(Color32::from_rgb(180, 45, 45)));
-                    }
-
-                    let range = self.selection_range();
-                    if range.cell_count() > 1 {
-                        ui.separator();
-                        let (count, sum, avg, _, _) = calculate_selection_stats(self.workbook.active(), range);
-                        ui.label(format!("Số lượng: {count}"));
-                        if let Some(sum_val) = sum {
-                            ui.label(format!("Tổng: {:.2}", sum_val));
-                        }
-                        if let Some(avg_val) = avg {
-                            ui.label(format!("TB: {:.2}", avg_val));
-                        }
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(format!("{}%", (self.zoom * 100.0).round() as u32));
-                        if ui.small_button("+").clicked() {
-                            self.zoom = (self.zoom + 0.1).min(2.0);
-                        }
-                        ui.add_sized(
-                            [95.0, 14.0],
-                            egui::Slider::new(&mut self.zoom, 0.5..=2.0).show_value(false),
-                        );
-                        if ui.small_button("−").clicked() {
-                            self.zoom = (self.zoom - 0.1).max(0.5);
-                        }
-                    });
-                });
-            });
-
-        // 6. BOTTOM SHEET TABS BAR
-        egui::TopBottomPanel::bottom("sheet_tabs")
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(243, 243, 243))
-                    .stroke(Stroke::new(1.0_f32, RIBBON_BORDER))
-                    .inner_margin(egui::Margin::symmetric(9.0, 2.0)),
-            )
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    let mut selected_tab = None;
-                    let mut delete_tab = None;
-
-                    for (index, sheet) in self.workbook.sheets.iter().enumerate() {
-                        let is_active = index == self.workbook.active_sheet;
-                        let response = ui.add_sized(
-                            [88.0, 27.0],
-                            egui::Button::new(RichText::new(&sheet.name).size(11.5).color(if is_active {
-                                RIBBON_TEXT
-                            } else {
-                                RIBBON_MUTED
-                            }))
-                            .fill(if is_active {
-                                Color32::WHITE
-                            } else {
-                                Color32::TRANSPARENT
-                            })
-                            .stroke(Stroke::NONE)
-                            .rounding(Rounding::same(2.0)),
-                        );
-                        if is_active {
-                            let underline = Rect::from_min_max(
-                                Pos2::new(response.rect.left() + 5.0, response.rect.bottom() - 2.0),
-                                Pos2::new(response.rect.right() - 5.0, response.rect.bottom()),
-                            );
-                            ui.painter().rect_filled(underline, Rounding::ZERO, EXCEL_GREEN);
-                        }
-
-                        if response.clicked() {
-                            selected_tab = Some(index);
-                        }
-                        if response.double_clicked() {
-                            self.rename_sheet_idx = Some(index);
-                            self.rename_sheet_buffer = sheet.name.clone();
-                        }
-                        if is_active && self.workbook.sheets.len() > 1 {
-                            if ui.small_button("✕").clicked() {
-                                delete_tab = Some(index);
-                            }
-                        }
-                    }
-
-                    if let Some(index) = selected_tab {
-                        self.workbook.active_sheet = index;
-                        self.selected = CellAddress { row: 1, column: 1 };
-                        self.selection_end = None;
-                        self.refresh_bars();
-                    }
-                    if let Some(index) = delete_tab {
-                        let _ = self.workbook.delete_sheet(index);
-                        self.refresh_bars();
-                    }
-
-                    if ui.small_button("+").on_hover_text("Thêm trang tính").clicked() {
-                        self.workbook.active_sheet = self.workbook.add_sheet("Sheet");
-                        self.workbook.dirty = true;
-                        self.selected = CellAddress { row: 1, column: 1 };
-                        self.selection_end = None;
-                        self.refresh_bars();
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_sized(
-                            [150.0, 14.0],
-                            egui::Slider::new(&mut self.first_column, 1..=MAX_COLUMNS).show_value(false),
-                        )
-                        .on_hover_text("Cuộn ngang qua các cột");
-                        ui.label(RichText::new("Cuộn ngang").size(10.5).color(RIBBON_MUTED));
-                    });
-                });
-            });
-
-        // 7. CENTRAL PANEL: Grid & Chart
+        self.render_chrome(context);
+        self.render_formula_bar(context);
+        self.render_bottom(context);
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::WHITE)
-                    .inner_margin(egui::Margin::same(0.0)),
-            )
+            .frame(egui::Frame::none().fill(Color32::WHITE))
             .show(context, |ui| {
-                // Render Chart above or below grid if active
-                if let Some(ref chart_item) = self.chart {
-                    draw_chart_panel(ui, chart_item, self.workbook.active());
-                    ui.add_space(8.0);
+                if let Some(ref chart) = self.chart {
+                    draw_chart_panel(ui, chart, self.workbook.active());
                 }
-
-                ui.scope(|ui| {
-                    // Spreadsheet cells must touch edge-to-edge; global widget spacing
-                    // otherwise turns every cell into a separate floating card.
-                    ui.spacing_mut().item_spacing = Vec2::ZERO;
-                    self.draw_grid(ui);
-                });
+                self.draw_grid(ui);
             });
 
         // 8. DIALOGS: Rename Sheet Modal
@@ -1660,267 +1009,6 @@ impl NomSheetApp {
             self.status = format!("Không tìm thấy '{}'", self.find_query);
         }
     }
-
-    fn draw_grid(&mut self, ui: &mut Ui) {
-        let col_w = (COLUMN_WIDTH * self.zoom).max(40.0);
-        let row_h = (ROW_HEIGHT * self.zoom).max(20.0);
-        let header_w = ROW_HEADER_WIDTH;
-
-        let available_width = ui.available_width();
-        let visible_columns = (((available_width - header_w) / col_w).floor() as u16).clamp(3, 40);
-        let end_column = self.first_column.saturating_add(visible_columns - 1).min(MAX_COLUMNS);
-        let first_column = self.first_column;
-
-        let selection_range = self.selection_range();
-        let selected = self.selected;
-        let active_sheet = self.workbook.active_sheet;
-        let zoom = self.zoom;
-        let show_gridlines = self.show_gridlines;
-        let editing_cell = self.editing_cell;
-        let workbook = &self.workbook;
-        let edit_buffer = &mut self.edit_buffer;
-
-        let mut corner_clicked = false;
-        let mut header_col_clicked = None;
-        let mut header_row_clicked = None;
-        let mut clicked = None;
-        let mut shift_clicked = None;
-        let mut drag_hovered = None;
-        let mut start_edit = false;
-        let mut edit_finished = false;
-        let mut edit_cancelled = false;
-
-        // Top Column Headers row
-        ui.horizontal(|ui| {
-            // Corner Button (Select All)
-            let (corner_rect, corner_resp) = ui.allocate_exact_size(Vec2::new(header_w, row_h), egui::Sense::click());
-            ui.painter()
-                .rect_filled(corner_rect, Rounding::ZERO, Color32::from_rgb(243, 243, 243));
-            ui.painter()
-                .rect_stroke(corner_rect, Rounding::ZERO, Stroke::new(0.5_f32, RIBBON_BORDER));
-            if corner_resp.clicked() {
-                corner_clicked = true;
-            }
-
-            for column in first_column..=end_column {
-                let is_col_selected = column >= selection_range.start.column && column <= selection_range.end.column;
-                let (h_rect, h_resp) = ui.allocate_exact_size(Vec2::new(col_w, row_h), egui::Sense::click());
-                ui.painter().rect_filled(
-                    h_rect,
-                    Rounding::ZERO,
-                    if is_col_selected {
-                        Color32::from_rgb(226, 240, 217)
-                    } else {
-                        Color32::from_rgb(243, 243, 243)
-                    },
-                );
-                ui.painter()
-                    .rect_stroke(h_rect, Rounding::ZERO, Stroke::new(0.5_f32, RIBBON_BORDER));
-                ui.painter().text(
-                    h_rect.center(),
-                    Align2::CENTER_CENTER,
-                    nom_workbook::column_name(column),
-                    egui::FontId::proportional(12.0 * zoom),
-                    RIBBON_TEXT,
-                );
-                if h_resp.clicked() {
-                    header_col_clicked = Some(column);
-                }
-            }
-        });
-
-        // Virtualized Vertical Row Scrolling
-        ScrollArea::vertical()
-            .id_salt("sheet_rows")
-            .auto_shrink([false, false])
-            .show_rows(ui, row_h, MAX_ROWS as usize, |ui, rows| {
-                for row_index in rows {
-                    let row = row_index as u32 + 1;
-                    let is_row_selected = row >= selection_range.start.row && row <= selection_range.end.row;
-
-                    ui.horizontal(|ui| {
-                        // Row Header
-                        let (r_rect, r_resp) = ui.allocate_exact_size(Vec2::new(header_w, row_h), egui::Sense::click());
-                        ui.painter().rect_filled(
-                            r_rect,
-                            Rounding::ZERO,
-                            if is_row_selected {
-                                Color32::from_rgb(226, 240, 217)
-                            } else {
-                                Color32::from_rgb(243, 243, 243)
-                            },
-                        );
-                        ui.painter()
-                            .rect_stroke(r_rect, Rounding::ZERO, Stroke::new(0.5_f32, RIBBON_BORDER));
-                        ui.painter().text(
-                            r_rect.center(),
-                            Align2::CENTER_CENTER,
-                            row.to_string(),
-                            egui::FontId::proportional(11.5 * zoom),
-                            RIBBON_TEXT,
-                        );
-                        if r_resp.clicked() {
-                            header_row_clicked = Some(row);
-                        }
-
-                        // Cells
-                        let current_sheet = &workbook.sheets[active_sheet];
-                        for column in first_column..=end_column {
-                            let address = CellAddress { row, column };
-                            let is_active_cell = address == selected;
-                            let in_selection = selection_range.contains(address);
-
-                            if is_active_cell && editing_cell {
-                                let response = ui.add_sized(
-                                    [col_w, row_h],
-                                    egui::TextEdit::singleline(edit_buffer).margin(Vec2::new(4.0, 3.0)),
-                                );
-                                response.request_focus();
-                                if response.lost_focus() {
-                                    if ui.input(|input| input.key_pressed(Key::Escape)) {
-                                        edit_cancelled = true;
-                                    } else {
-                                        edit_finished = true;
-                                    }
-                                }
-                            } else {
-                                let style = current_sheet.get_style(address);
-                                let value = evaluate_cell(workbook, active_sheet, address);
-                                let num_fmt = style.map(|s| s.num_format).unwrap_or(NumFormat::General);
-                                let text = value.format_display(num_fmt);
-
-                                let (cell_rect, response) =
-                                    ui.allocate_exact_size(Vec2::new(col_w, row_h), egui::Sense::click_and_drag());
-
-                                // Cell background color
-                                let bg = if let Some(s) = style {
-                                    if let Some([r, g, b]) = s.bg_color {
-                                        Color32::from_rgb(r, g, b)
-                                    } else if in_selection && !is_active_cell {
-                                        Color32::from_rgb(239, 247, 237)
-                                    } else {
-                                        Color32::WHITE
-                                    }
-                                } else if in_selection && !is_active_cell {
-                                    Color32::from_rgb(239, 247, 237)
-                                } else {
-                                    Color32::WHITE
-                                };
-
-                                ui.painter().rect_filled(cell_rect, Rounding::ZERO, bg);
-
-                                // Gridline
-                                if show_gridlines {
-                                    ui.painter().rect_stroke(
-                                        cell_rect,
-                                        Rounding::ZERO,
-                                        Stroke::new(0.5_f32, Color32::from_rgb(217, 217, 217)),
-                                    );
-                                }
-
-                                // Active cell border
-                                if is_active_cell {
-                                    ui.painter().rect_stroke(
-                                        cell_rect,
-                                        Rounding::ZERO,
-                                        Stroke::new(2.0_f32, EXCEL_GREEN),
-                                    );
-                                    // Corner fill handle
-                                    let handle_rect = Rect::from_center_size(
-                                        Pos2::new(cell_rect.max.x, cell_rect.max.y),
-                                        Vec2::splat(5.0),
-                                    );
-                                    ui.painter().rect_filled(handle_rect, Rounding::ZERO, EXCEL_GREEN);
-                                }
-
-                                // Text alignment and color
-                                let text_color = if let Some(s) = style {
-                                    if let Some([r, g, b]) = s.text_color {
-                                        Color32::from_rgb(r, g, b)
-                                    } else {
-                                        Color32::from_rgb(15, 23, 42)
-                                    }
-                                } else {
-                                    Color32::from_rgb(15, 23, 42)
-                                };
-
-                                let align = style.map(|s| s.align).unwrap_or(CellAlign::General);
-                                let (align2, text_pos) = match align {
-                                    CellAlign::Center => (Align2::CENTER_CENTER, cell_rect.center()),
-                                    CellAlign::Right => (
-                                        Align2::RIGHT_CENTER,
-                                        Pos2::new(cell_rect.max.x - 6.0, cell_rect.center().y),
-                                    ),
-                                    _ => (
-                                        Align2::LEFT_CENTER,
-                                        Pos2::new(cell_rect.min.x + 6.0, cell_rect.center().y),
-                                    ),
-                                };
-
-                                let font = if style.map(|s| s.bold).unwrap_or(false) {
-                                    egui::FontId::proportional(13.0 * zoom)
-                                } else {
-                                    egui::FontId::proportional(12.5 * zoom)
-                                };
-
-                                ui.painter().text(text_pos, align2, text, font, text_color);
-
-                                if response.clicked() {
-                                    if ui.input(|i| i.modifiers.shift) {
-                                        shift_clicked = Some(address);
-                                    } else {
-                                        clicked = Some(address);
-                                    }
-                                }
-                                if response.double_clicked() {
-                                    clicked = Some(address);
-                                    start_edit = true;
-                                }
-                                if response.dragged() {
-                                    drag_hovered = Some(address);
-                                }
-                            }
-                        }
-                    });
-                }
-            });
-
-        if corner_clicked {
-            self.selected = CellAddress { row: 1, column: 1 };
-            self.selection_end = Some(CellAddress { row: 50, column: 20 });
-            self.refresh_bars();
-        }
-        if let Some(col) = header_col_clicked {
-            self.selected = CellAddress { row: 1, column: col };
-            self.selection_end = Some(CellAddress { row: 100, column: col });
-            self.refresh_bars();
-        }
-        if let Some(row) = header_row_clicked {
-            self.selected = CellAddress { row, column: 1 };
-            self.selection_end = Some(CellAddress { row, column: 30 });
-            self.refresh_bars();
-        }
-        if let Some(address) = shift_clicked {
-            self.selection_end = Some(address);
-            self.refresh_bars();
-        }
-        if edit_finished {
-            self.commit_edit();
-        } else if edit_cancelled {
-            self.editing_cell = false;
-            self.refresh_bars();
-        }
-        if let Some(address) = clicked {
-            self.select_cell(address);
-        }
-        if let Some(address) = drag_hovered {
-            self.selection_end = Some(address);
-            self.refresh_bars();
-        }
-        if start_edit {
-            self.editing_cell = true;
-        }
-    }
 }
 
 fn calculate_selection_stats(
@@ -1933,16 +1021,14 @@ fn calculate_selection_stats(
     let mut min = f64::MAX;
     let mut max = f64::MIN;
 
-    for row in range.iter_rows() {
-        for col in range.iter_columns() {
-            count += 1;
-            let val = sheet.get(CellAddress { row, column: col });
-            if let Some(n) = number_val(val) {
-                sum += n;
-                num_count += 1;
-                min = min.min(n);
-                max = max.max(n);
-            }
+    for (address, val) in sheet.cells().filter(|(address, _)| range.contains(*address)) {
+        let _ = address;
+        count += 1;
+        if let Some(n) = number_val(val) {
+            sum += n;
+            num_count += 1;
+            min = min.min(n);
+            max = max.max(n);
         }
     }
 
