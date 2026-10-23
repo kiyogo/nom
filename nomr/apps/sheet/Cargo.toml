@@ -14,6 +14,8 @@ nom-workbook = { path = "../../crates/workbook" }
 nom-formula = { path = "../../crates/formula" }
 nom-xlsx = { path = "../../crates/xlsx" }
 arboard = { version = "3.6", default-features = false }
+egui_extras = { version = "0.30", default-features = false, features = ["svg"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

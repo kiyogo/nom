@@ -13,7 +13,11 @@ apps/sheet/src/main.rs                 eframe, cửa sổ native, argv[1]
 └── app.rs / NomSheetApp               trạng thái UI, lệnh, undo, context công thức
     ├── app/appearance.rs              theme sáng, màu, đăng ký font và fallback
     ├── app/icons.rs                   icon vẽ bằng egui::Painter, nút và tooltip
-    ├── app/ribbon.rs                  header, tab, ribbon, formula bar, sheet/status bar
+    ├── app/chrome.rs                  tọa độ header/tab/File, formula bar, sheet tabs, resize cửa sổ
+    ├── app/chrome_icons.rs            SVG Lucide từ mẫu Docs; cache theo kích thước/DPI
+    ├── app/ribbon.rs                  nhóm lệnh định dạng, dữ liệu, biểu đồ, trợ giúp
+    ├── app/file_commands.rs           nguồn CSV và bản in HTML cục bộ
+    ├── app/capture.rs                 ảnh GPU của viewport cho kiểm tra bố cục
     ├── app/grid.rs                    viewport, vẽ ô/tiêu đề, cuộn, chọn và sửa tại ô
     └── app/dialogs.rs                 hộp thoại tệp Windows, đọc clipboard bằng arboard
 
@@ -29,7 +33,7 @@ Ba engine `workbook`, `formula`, `xlsx` vẫn là các crate riêng, không ph�
 
 [`main.rs`](../apps/sheet/src/main.rs) đọc đường dẫn ban đầu từ đối số dòng lệnh, tạo cửa sổ `eframe` và `NomSheetApp`. [`app.rs`](../apps/sheet/src/app.rs) giữ workbook, ô/vùng chọn, bộ đệm sửa ô/công thức/đường dẫn, tab đang mở, offset cuộn, zoom, lịch sử ô và biểu đồ hiện hành. `eframe::App::update` xử lý bàn phím, vẽ chrome/formula bar/thanh đáy rồi panel biểu đồ và lưới; các cửa sổ egui cho đổi tên sheet, tìm/thay thế, thay đổi chưa lưu và xác nhận phạm vi lưu hiện vẫn ở `app.rs`.
 
-[`ribbon.rs`](../apps/sheet/src/app/ribbon.rs) tạo thanh tiêu đề theo tài liệu, lệnh lưu/undo/redo, ô tìm kiếm và 8 tab `Tệp`, `Trang chủ`, `Chèn`, `Định dạng`, `Dữ liệu`, `Công thức`, `Xem`, `Trợ giúp`. `Trang chủ` và `Định dạng` dùng chung lệnh clipboard/định dạng. `Dữ liệu` có sắp xếp và chèn/xóa hàng/cột; `Công thức` chèn mẫu của một số hàm. Tab trợ giúp có danh sách khả năng đã có/chưa có. Ribbon cuộn ngang, không ngụ ý mọi lệnh của bộ sản phẩm Google đã tồn tại.
+[`chrome.rs`](../apps/sheet/src/app/chrome.rs) định vị header, 8 tab, lệnh Tệp, formula bar và thanh trang tính bằng kích thước đo từ ảnh tham chiếu. Cửa sổ không dùng titlebar OS; module cung cấp kéo/phóng to/thu nhỏ/đóng và vùng resize. [`ribbon.rs`](../apps/sheet/src/app/ribbon.rs) giữ các nhóm lệnh của những tab khác. `Trang chủ` và `Định dạng` dùng chung nhóm clipboard/định dạng. `Dữ liệu` có sắp xếp và chèn/xóa hàng/cột; `Công thức` chèn mẫu hàm. Tên/lệnh vẫn dành cho Sheet theo lựa chọn người dùng.
 
 Name Box phân tích `CellRange`, chuyển đến ô hoặc chọn vùng; formula bar xác nhận nội dung qua `commit_edit`. Thanh sheet cho phép chuyển/thêm và nhấp đúp để đổi tên. API xóa sheet có ở workbook nhưng chưa có lệnh tương ứng trong UI hiện tại; lỗi đổi tên trả về từ engine hiện bị bỏ qua ở hộp thoại.
 
@@ -37,7 +41,7 @@ Name Box phân tích `CellRange`, chuyển đến ô hoặc chọn vùng; formul
 
 ## Renderer lưới và trạng thái viewport
 
-[`grid.rs`](../apps/sheet/src/app/grid.rs) dùng `ScrollArea::both().show_viewport`. Nó khai báo kích thước logic theo `MAX_ROWS`/`MAX_COLUMNS`, tính khoảng hàng/cột cắt với viewport và chỉ vẽ các ô trong khoảng đó bằng `egui::Painter`. Đây không còn là renderer dựa trên `ScrollArea::show_rows` hoặc widget cho từng ô toàn sheet.
+[`grid.rs`](../apps/sheet/src/app/grid.rs) dùng `ScrollArea::both().show_viewport`. Worksheet mới có extent hiển thị 26 cột × 1.000 hàng; extent mở rộng khi nạp dữ liệu, dán hoặc điều hướng đến địa chỉ xa hơn, trong giới hạn mô hình `MAX_ROWS`/`MAX_COLUMNS`. Renderer chỉ vẽ các ô cắt với viewport bằng `egui::Painter`. Đường kẻ 1px đặt tại tâm pixel để không bị nhòe thành hai hàng pixel. Scrollbar giữ input egui và vẽ lại track/thumb ngang theo ảnh tham chiếu.
 
 Offset được giữ trong `grid_scroll`; `reveal_selection` đưa ô hiện hành vào vùng nhìn thấy khi điều hướng. Nội dung ô và đường lưới được clip vào phần thân; tiêu đề hàng/cột được vẽ riêng tại mép trên/trái của viewport để luôn nhìn thấy khi cuộn cả hai chiều. Đây là tiêu đề cố định, chưa phải hỗ trợ đóng băng hàng/cột dữ liệu tùy ý hoặc bảo toàn pane XLSX.
 
@@ -124,4 +128,6 @@ CSV chỉ xuất sheet đang chọn dưới dạng UTF-8; công thức xuất th
 
 Hiện chưa có backend đồng biên tập, chia sẻ/phân quyền, Google Drive, bình luận/lịch sử phiên bản, Apps Script hay connector dữ liệu trực tuyến trong Nom Sheet. Những khả năng này cần các hệ thống riêng ngoài renderer native hiện tại.
 
-Các tính năng pivot, filter/filter view, merge, validation, conditional formatting, đóng băng dữ liệu tùy chọn, autofill và cập nhật tham chiếu khi đổi cấu trúc cần mở rộng mô hình, lệnh UI và bộ đọc/ghi tương ứng. Structural undo cần lịch sử cho thay đổi cấu trúc, thay vì chỉ snapshot ô. In, thiết lập trang và xuất PDF từ Nom Sheet chưa có đường xử lý; bộ hàm/ngữ nghĩa Google Sheets và bảo toàn XLSX đầy đủ cũng chưa hoàn thành.
+Các tính năng pivot, filter/filter view, merge, validation, conditional formatting, đóng băng dữ liệu tùy chọn, autofill và cập nhật tham chiếu khi đổi cấu trúc cần mở rộng mô hình, lệnh UI và bộ đọc/ghi tương ứng. Structural undo cần lịch sử cho thay đổi cấu trúc. Lệnh In hiện dựng bảng HTML cục bộ đã escape dữ liệu rồi mở trình duyệt để người dùng in/lưu PDF; chưa có bộ phân trang, vùng in hoặc xuất PDF native. Bộ hàm/ngữ nghĩa Google Sheets và bảo toàn XLSX đầy đủ cũng chưa hoàn thành.
+
+Chi tiết kích thước, lệnh chụp GPU và cách đo sai khác: [Đối chiếu giao diện](NOM_SHEET_VISUAL_REFERENCE.md).

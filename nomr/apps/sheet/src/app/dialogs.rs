@@ -23,7 +23,11 @@ fn file_dialog(save: bool, initial: &str) -> Option<PathBuf> {
     dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
     dialog.hwndOwner = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
     dialog.lpstrFilter = filter.as_ptr();
-    dialog.nFilterIndex = 1;
+    dialog.nFilterIndex = if initial.to_ascii_lowercase().ends_with(".csv") {
+        2
+    } else {
+        1
+    };
     dialog.lpstrFile = file.as_mut_ptr();
     dialog.nMaxFile = file.len() as u32;
     dialog.lpstrTitle = title.as_ptr();
@@ -78,6 +82,20 @@ impl NomSheetApp {
             .and_then(|path| path.file_stem())
             .map(|stem| format!("{}.csv", stem.to_string_lossy()))
             .unwrap_or_else(|| "Bảng tính.csv".to_owned());
+        if let Some(path) = file_dialog(true, &initial) {
+            self.path_buffer = path.display().to_string();
+            self.save_path();
+        }
+    }
+
+    pub(super) fn choose_save_xlsx_file(&mut self) {
+        let initial = self
+            .workbook
+            .file_path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| format!("{}.xlsx", stem.to_string_lossy()))
+            .unwrap_or_else(|| "Bảng tính.xlsx".to_owned());
         if let Some(path) = file_dialog(true, &initial) {
             self.path_buffer = path.display().to_string();
             self.save_path();

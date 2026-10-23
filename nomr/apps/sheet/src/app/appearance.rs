@@ -1,9 +1,9 @@
 use eframe::egui::{self, Color32, Context, FontData, FontDefinitions, FontFamily, Rounding, Stroke, Vec2};
 
-pub(super) const BLUE: Color32 = Color32::from_rgb(26, 115, 232);
+pub(super) const BLUE: Color32 = Color32::from_rgb(50, 113, 234);
 pub(super) const HEADER: Color32 = Color32::from_rgb(248, 249, 250);
 pub(super) const HEADER_SELECTED: Color32 = Color32::from_rgb(211, 227, 253);
-pub(super) const GRID_LINE: Color32 = Color32::from_rgb(224, 224, 224);
+pub(super) const GRID_LINE: Color32 = Color32::from_rgb(225, 225, 225);
 
 pub(super) fn setup_sheet_appearance(context: &Context) {
     let mut fonts = FontDefinitions::default();
@@ -35,6 +35,17 @@ pub(super) fn setup_sheet_appearance(context: &Context) {
         }
     }
     let regular = fonts.families[&FontFamily::Name("Segoe UI-0".into())].clone();
+    let mut semibold = regular.clone();
+    if let Ok(data) = std::fs::read(r"C:\Windows\Fonts\seguisb.ttf") {
+        fonts.font_data.insert(
+            "Segoe UI-Semibold".into(),
+            std::sync::Arc::new(FontData::from_owned(data)),
+        );
+        semibold.insert(0, "Segoe UI-Semibold".into());
+    }
+    fonts
+        .families
+        .insert(FontFamily::Name("Segoe UI-Semibold".into()), semibold);
     // Both proportional UI labels and monospace text fields need Vietnamese.
     fonts.families.insert(FontFamily::Proportional, regular.clone());
     fonts.families.insert(FontFamily::Monospace, regular);

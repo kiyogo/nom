@@ -2,8 +2,8 @@ use super::appearance::{BLUE, GRID_LINE, HEADER, HEADER_SELECTED};
 use super::*;
 
 const ROW: f32 = 21.0;
-const COL: f32 = 100.0;
-const GUTTER: f32 = 38.0;
+const COL: f32 = 101.0;
+const GUTTER: f32 = 44.0;
 const HEAD: f32 = 24.0;
 
 impl NomSheetApp {
@@ -39,17 +39,28 @@ impl NomSheetApp {
         let mut advance = None;
         let mut header_action = None;
         ui.spacing_mut().item_spacing = Vec2::ZERO;
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        ui.spacing_mut().scroll.bar_width = 12.0;
+        ui.spacing_mut().scroll.bar_inner_margin = 0.0;
+        ui.spacing_mut().scroll.bar_outer_margin = 0.0;
+        ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_gray(204);
+        ui.visuals_mut().widgets.hovered.bg_fill = Color32::from_gray(204);
+        ui.visuals_mut().widgets.active.bg_fill = Color32::from_gray(190);
+        ui.visuals_mut().widgets.noninteractive.bg_fill = Color32::from_gray(241);
+        ui.visuals_mut().extreme_bg_color = Color32::from_rgb(248, 250, 253);
+        let scroll_rect = Rect::from_min_max(ui.max_rect().min + Vec2::new(GUTTER, HEAD), ui.max_rect().max);
         let output = ScrollArea::both()
             .id_salt(("sheet-grid", self.workbook.active_sheet))
             .auto_shrink([false, false])
             .scroll_offset(self.grid_scroll)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .scroll_bar_rect(scroll_rect)
             .show_viewport(ui, |ui, viewport| {
                 let origin = ui.min_rect().min + viewport.min.to_vec2();
                 let screen = Rect::from_min_max(origin, ui.clip_rect().max);
                 ui.set_min_size(Vec2::new(
-                    GUTTER + MAX_COLUMNS as f32 * col_w,
-                    HEAD + MAX_ROWS as f32 * row_h,
+                    GUTTER + self.grid_columns as f32 * col_w,
+                    HEAD + self.grid_rows as f32 * row_h,
                 ));
                 let body = Rect::from_min_max(origin + Vec2::new(GUTTER, HEAD), screen.max);
                 let painter = ui.painter().with_clip_rect(body);
@@ -120,7 +131,7 @@ impl NomSheetApp {
                         if let Some([r, g, b]) = style.bg_color {
                             painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(r, g, b));
                         }
-                        if range.contains(address) {
+                        if range.cell_count() > 1 && range.contains(address) {
                             painter.rect_filled(
                                 rect,
                                 Rounding::ZERO,
@@ -128,11 +139,19 @@ impl NomSheetApp {
                             );
                         }
                         if self.show_gridlines {
-                            painter
-                                .line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(0.6_f32, GRID_LINE));
                             painter.line_segment(
-                                [rect.left_bottom(), rect.right_bottom()],
-                                Stroke::new(0.6_f32, GRID_LINE),
+                                [
+                                    rect.right_top() + Vec2::splat(0.5),
+                                    rect.right_bottom() + Vec2::splat(0.5),
+                                ],
+                                Stroke::new(1.0_f32, GRID_LINE),
+                            );
+                            painter.line_segment(
+                                [
+                                    rect.left_bottom() + Vec2::splat(0.5),
+                                    rect.right_bottom() + Vec2::splat(0.5),
+                                ],
+                                Stroke::new(1.0_f32, GRID_LINE),
                             );
                         }
                         if address == self.selected && self.editing_cell {
@@ -191,11 +210,36 @@ impl NomSheetApp {
                     }
                 }
                 let selection_rect = Rect::from_min_max(cell_rect(range.start).min, cell_rect(range.end).max);
-                painter.rect_stroke(selection_rect, Rounding::ZERO, Stroke::new(1.0_f32, BLUE));
+                if range.cell_count() > 1 {
+                    painter.rect_stroke(selection_rect, Rounding::ZERO, Stroke::new(1.0_f32, BLUE));
+                }
                 let active = cell_rect(self.selected);
-                painter.rect_stroke(active, Rounding::ZERO, Stroke::new(1.8_f32, BLUE));
+                let outline = Rect::from_min_max(active.min + Vec2::splat(1.5), active.max + Vec2::splat(0.5));
+                for edge in [
+                    [outline.left_top(), outline.right_top()],
+                    [outline.right_top(), outline.right_bottom()],
+                    [outline.right_bottom(), outline.left_bottom()],
+                    [outline.left_bottom(), outline.left_top()],
+                ] {
+                    painter.line_segment(edge, Stroke::new(1.0_f32, BLUE));
+                }
+                // The reference uses a 1px top/left and 2px bottom/right edge.
+                painter.line_segment(
+                    [
+                        outline.right_top() - Vec2::new(1.0, 0.0),
+                        outline.right_bottom() - Vec2::new(1.0, 0.0),
+                    ],
+                    Stroke::new(1.0_f32, BLUE),
+                );
+                painter.line_segment(
+                    [
+                        outline.left_bottom() - Vec2::new(0.0, 1.0),
+                        outline.right_bottom() - Vec2::new(0.0, 1.0),
+                    ],
+                    Stroke::new(1.0_f32, BLUE),
+                );
                 if body.contains(active.right_bottom()) {
-                    painter.circle_filled(active.right_bottom(), 3.0, BLUE);
+                    painter.circle_filled(active.right_bottom(), 4.0, Color32::from_rgb(11, 87, 208));
                 }
                 if self.editing_cell && active.intersects(body) {
                     let edit = ui.put(
@@ -228,10 +272,15 @@ impl NomSheetApp {
                 hp.rect_filled(
                     Rect::from_min_max(origin, Pos2::new(screen.right(), origin.y + HEAD)),
                     Rounding::ZERO,
-                    HEADER,
+                    Color32::WHITE,
                 );
                 hp.rect_filled(
                     Rect::from_min_max(origin, Pos2::new(origin.x + GUTTER, screen.bottom())),
+                    Rounding::ZERO,
+                    Color32::WHITE,
+                );
+                hp.rect_filled(
+                    Rect::from_min_size(origin, Vec2::new(GUTTER, HEAD)),
                     Rounding::ZERO,
                     HEADER,
                 );
@@ -249,15 +298,22 @@ impl NomSheetApp {
                         p.rect_filled(rect, Rounding::ZERO, HEADER_SELECTED);
                     }
                     p.line_segment(
-                        [rect.right_top(), rect.right_bottom()],
+                        [
+                            rect.right_top() + Vec2::splat(0.5),
+                            rect.right_bottom() + Vec2::splat(0.5),
+                        ],
                         Stroke::new(1.0_f32, Color32::from_gray(196)),
                     );
                     p.text(
                         rect.center(),
                         Align2::CENTER_CENTER,
                         nom_workbook::column_name(column),
-                        egui::FontId::proportional(11.0),
-                        RIBBON_TEXT,
+                        egui::FontId::new(11.0, FontFamily::Name("Arial-0".into())),
+                        if column >= range.start.column && column <= range.end.column {
+                            Color32::from_rgb(0, 30, 65)
+                        } else {
+                            Color32::from_rgb(68, 71, 70)
+                        },
                     );
                     if ui
                         .interact(
@@ -284,15 +340,32 @@ impl NomSheetApp {
                         p.rect_filled(rect, Rounding::ZERO, HEADER_SELECTED);
                     }
                     p.line_segment(
-                        [rect.left_bottom(), rect.right_bottom()],
-                        Stroke::new(0.6_f32, GRID_LINE),
+                        [
+                            rect.left_bottom() + Vec2::splat(0.5),
+                            rect.right_bottom() + Vec2::splat(0.5),
+                        ],
+                        Stroke::new(1.0_f32, GRID_LINE),
                     );
                     p.text(
                         rect.center(),
                         Align2::CENTER_CENTER,
                         row.to_string(),
-                        egui::FontId::proportional(10.5),
-                        RIBBON_MUTED,
+                        egui::FontId::new(
+                            11.0,
+                            FontFamily::Name(
+                                if row >= range.start.row && row <= range.end.row {
+                                    "Arial-1"
+                                } else {
+                                    "Arial-0"
+                                }
+                                .into(),
+                            ),
+                        ),
+                        if row >= range.start.row && row <= range.end.row {
+                            Color32::from_rgb(0, 30, 65)
+                        } else {
+                            Color32::from_rgb(68, 71, 70)
+                        },
                     );
                     if ui
                         .interact(
@@ -307,20 +380,46 @@ impl NomSheetApp {
                 }
                 hp.line_segment(
                     [
-                        origin + Vec2::new(GUTTER, 0.0),
-                        Pos2::new(origin.x + GUTTER, screen.bottom()),
+                        origin + Vec2::new(GUTTER + 0.5, 0.0),
+                        Pos2::new(origin.x + GUTTER + 0.5, screen.bottom()),
                     ],
                     Stroke::new(1.0_f32, Color32::from_gray(196)),
                 );
                 hp.line_segment(
                     [
-                        origin + Vec2::new(0.0, HEAD),
-                        Pos2::new(screen.right(), origin.y + HEAD),
+                        origin + Vec2::new(0.0, HEAD + 0.5),
+                        Pos2::new(screen.right(), origin.y + HEAD + 0.5),
                     ],
-                    Stroke::new(1.0_f32, Color32::from_gray(196)),
+                    Stroke::new(1.0_f32, Color32::from_rgb(196, 199, 197)),
+                );
+                hp.hline(
+                    screen.x_range(),
+                    origin.y + 0.5,
+                    Stroke::new(1.0_f32, Color32::from_gray(199)),
                 );
             });
         self.grid_scroll = output.state.offset;
+        // Preserve egui's scrollbar input while matching the reference's 12px
+        // white track, inset rounded thumb, and frozen row-header gutter.
+        let track = Rect::from_min_max(
+            Pos2::new(output.inner_rect.left() + GUTTER, output.inner_rect.bottom()),
+            Pos2::new(output.inner_rect.right(), output.inner_rect.bottom() + 12.0),
+        );
+        let scroll_painter = ui.painter();
+        scroll_painter.rect_filled(track, Rounding::ZERO, Color32::WHITE);
+        scroll_painter.hline(
+            track.x_range(),
+            track.top() + 0.5,
+            Stroke::new(1.0_f32, Color32::from_rgb(196, 199, 197)),
+        );
+        let thumb_width =
+            (track.width() * output.inner_rect.width() / output.content_size.x).clamp(12.0, track.width());
+        let thumb_left = track.left() + track.width() * output.state.offset.x / output.content_size.x;
+        scroll_painter.rect_filled(
+            Rect::from_min_size(Pos2::new(thumb_left, track.top() + 2.0), Vec2::new(thumb_width, 9.0)),
+            Rounding::same(5.0),
+            Color32::from_gray(218),
+        );
         if cancel {
             self.editing_cell = false;
             self.refresh_bars();

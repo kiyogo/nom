@@ -10,7 +10,8 @@ Tài liệu này mô tả phần đã triển khai trong mã nguồn Rust hiện
 |---|---|---|
 | Ứng dụng native | Rust với `eframe` / `egui`, backend `wgpu`; mở tệp qua đối số dòng lệnh hoặc giao diện. Giao diện sáng, nhãn tiếng Việt. | Không có dịch vụ cộng tác hay lưu trữ đám mây trong ứng dụng bảng tính. |
 | Ribbon kiểu Docs | Thanh tiêu đề tài liệu, trạng thái chưa lưu, lưu nhanh, undo/redo, tìm kiếm; 8 tab: `Tệp`, `Trang chủ`, `Chèn`, `Định dạng`, `Dữ liệu`, `Công thức`, `Xem`, `Trợ giúp`. Ribbon cuộn ngang khi thiếu chỗ. | `Định dạng` dùng chung nhóm lệnh với `Trang chủ`; `Trợ giúp` hiển thị hướng dẫn và danh sách khả năng. Tên tab không cam kết đủ tính năng tương ứng của Google Sheets. |
-| Mở / lưu tệp | Tạo mới, mở, lưu và lưu thành `.xlsx` / `.csv`; hộp thoại chọn tệp native trên Windows; ô đường dẫn trong tab `Tệp`. | Bộ chọn tệp ngoài Windows hiện trả về `None`; không khẳng định có hộp thoại native trên mọi nền tảng. |
+| Mở / lưu tệp | Tạo mới, mở, lưu, tải `.xlsx` và xuất CSV; hộp thoại tệp native trên Windows. Tab Tệp dùng cùng bộ SVG với mẫu Docs; có cửa sổ xem/sao chép nguồn CSV. | Bộ chọn tệp ngoài Windows hiện trả về `None`; tên lệnh dành cho Sheet, không dùng định dạng tài liệu `.wnom`. |
+| Bản in | Dựng bảng HTML cục bộ từ các giá trị đã tính và mở trình duyệt; nút In bảng tính dùng hộp thoại in/lưu PDF của trình duyệt. | Giới hạn 100.000 ô, chưa có phân trang/vùng in hoặc giữ toàn bộ style, không phải xuất PDF native. |
 | Thanh công thức | Name Box nhận địa chỉ ô hoặc vùng, ví dụ `A1`, `A1:C10`; biểu tượng `fx`; nhập giá trị hoặc công thức và xác nhận bằng Enter. | Chưa có trình biên tập công thức với đầy đủ gợi ý, tô màu tham chiếu và trợ giúp đối số như Google Sheets. |
 | Lưới kiểu Google Sheets | Vẽ trực tiếp phần nhìn thấy bằng `egui::Painter` trong `ScrollArea::both().show_viewport`; cuộn hai chiều, tiêu đề hàng/cột cố định tại mép viewport, vùng chọn và ô hiện hành màu xanh dương `#1A73E8`. | Tiêu đề cố định không phải chức năng đóng băng các hàng/cột dữ liệu tùy chọn. Chấm ở góc ô chỉ là dấu vẽ; chưa có kéo điền tự động. |
 | Chọn và sửa ô | Click, kéo chọn, Shift-click, Shift-phím mũi tên, chọn cả hàng/cột từ tiêu đề; sửa tại ô bằng nhấp đúp, F2 hoặc Enter; Enter/Tab xác nhận và chuyển ô, Escape hủy sửa. Menu ngữ cảnh có sao chép, dán, xóa. | Mô hình địa chỉ có tối đa 1.048.576 hàng × 16.384 cột; đây không phải cam kết tải hay thao tác toàn bộ số ô đó cùng lúc. |
@@ -51,7 +52,7 @@ Loader không giữ nguyên gói XLSX gốc. Khi lưu lại, writer dựng gói 
 | Tự động hóa và dữ liệu ngoài | Apps Script, tiện ích mở rộng, connector và các dịch vụ/hàm phụ thuộc Google hoặc dữ liệu trực tuyến. |
 | Phân tích và quy tắc dữ liệu | Pivot table, bộ lọc và filter view, xác thực dữ liệu/dropdown, định dạng có điều kiện. |
 | Bố cục bảng tính | Gộp ô, đóng băng hàng/cột dữ liệu tùy chọn, đổi kích thước/ẩn hàng cột, xuống dòng và viền ô đầy đủ, kéo điền chuỗi và tự điều chỉnh tham chiếu công thức. |
-| In và xuất bản | Thiết lập trang in, vùng in, xem trước khi in, in và xuất PDF từ Nom Sheet. |
+| In và xuất bản | Thiết lập trang in/vùng in, phân trang, giữ style đầy đủ và xuất PDF native; bản in HTML cơ bản đã có. |
 | Tính toán và khả năng tương tác | Toàn bộ thư viện/ngữ nghĩa hàm Google Sheets, mảng động đầy đủ, tính lại theo đồ thị phụ thuộc và bảo toàn mọi thành phần XLSX. |
 | Lịch sử và quản lý đối tượng | Undo/redo cấu trúc, quản lý sheet đầy đủ qua UI, lưu và chỉnh sửa biểu đồ/đối tượng nâng cao. |
 

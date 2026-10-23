@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 mod appearance;
+mod capture;
+mod chrome;
+mod chrome_icons;
 mod dialogs;
+mod file_commands;
 mod grid;
 mod icons;
 mod ribbon;
@@ -20,7 +24,6 @@ use nom_workbook::{
 const FORMULA_DEPTH_LIMIT: usize = 500;
 const RANGE_CELL_LIMIT: u64 = 100_000;
 const RIBBON_TEXT: Color32 = Color32::from_rgb(32, 31, 30);
-const RIBBON_MUTED: Color32 = Color32::from_rgb(96, 94, 92);
 const RIBBON_BORDER: Color32 = Color32::from_rgb(218, 220, 224);
 
 #[derive(Clone)]
@@ -34,8 +37,6 @@ pub enum RibbonTab {
     File,
     Home,
     Insert,
-    Draw,
-    PageLayout,
     Formulas,
     Data,
     Review,
@@ -94,94 +95,21 @@ pub struct NomSheetApp {
     rename_sheet_buffer: String,
     chart: Option<ChartItem>,
     grid_scroll: Vec2,
+    grid_columns: u16,
+    grid_rows: u32,
     reveal_selection: bool,
     edit_focus_requested: bool,
     show_capabilities: bool,
     formula_is_focused: bool,
-}
-
-#[cfg(target_os = "windows")]
-fn set_light_native_titlebar() {
-    use std::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static APPLIED: AtomicBool = AtomicBool::new(false);
-    if APPLIED.load(Ordering::Relaxed) {
-        return;
-    }
-
-    struct WindowSearch {
-        process_id: u32,
-        handle: isize,
-    }
-
-    extern "system" fn find_sheet_window(hwnd: isize, data: isize) -> i32 {
-        #[link(name = "user32")]
-        extern "system" {
-            fn GetWindowThreadProcessId(hwnd: isize, process_id: *mut u32) -> u32;
-            fn IsWindowVisible(hwnd: isize) -> i32;
-            fn GetWindowTextW(hwnd: isize, text: *mut u16, max_count: i32) -> i32;
-        }
-
-        let search = unsafe { &mut *(data as *mut WindowSearch) };
-        let mut process_id = 0;
-        unsafe {
-            if GetWindowThreadProcessId(hwnd, &mut process_id) == 0
-                || process_id != search.process_id
-                || IsWindowVisible(hwnd) == 0
-            {
-                return 1;
-            }
-        }
-
-        let mut title = [0_u16; 128];
-        let title_len = unsafe { GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32) };
-        if String::from_utf16_lossy(&title[..title_len.max(0) as usize]) == "Nom Sheet" {
-            search.handle = hwnd;
-            0
-        } else {
-            1
-        }
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn EnumWindows(callback: extern "system" fn(isize, isize) -> i32, data: isize) -> i32;
-    }
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const c_void, value_size: u32) -> i32;
-    }
-
-    let mut search = WindowSearch {
-        process_id: std::process::id(),
-        handle: 0,
-    };
-    unsafe {
-        let _ = EnumWindows(find_sheet_window, &mut search as *mut _ as isize);
-    }
-    if search.handle == 0 {
-        return;
-    }
-
-    let light_mode = 0_u32;
-    let value = &light_mode as *const _ as *const c_void;
-    let size = std::mem::size_of_val(&light_mode) as u32;
-    let modern_result = unsafe { DwmSetWindowAttribute(search.handle, 20, value, size) };
-    let result = if modern_result >= 0 {
-        modern_result
-    } else {
-        // Older supported Windows builds expose the same option as attribute 19.
-        unsafe { DwmSetWindowAttribute(search.handle, 19, value, size) }
-    };
-    if result >= 0 {
-        APPLIED.store(true, Ordering::Relaxed);
-    }
+    show_sheet_source: bool,
+    capture_path: Option<PathBuf>,
+    capture_frames: u8,
 }
 
 impl NomSheetApp {
     pub fn new(context: &eframe::CreationContext<'_>, initial_file: Option<PathBuf>) -> Self {
         setup_sheet_appearance(&context.egui_ctx);
+        egui_extras::install_image_loaders(&context.egui_ctx);
         let mut app = Self {
             workbook: Workbook::default(),
             selected: CellAddress { row: 1, column: 1 },
@@ -210,11 +138,18 @@ impl NomSheetApp {
             rename_sheet_buffer: String::new(),
             chart: None,
             grid_scroll: Vec2::ZERO,
+            grid_columns: 26,
+            grid_rows: 1000,
             reveal_selection: true,
             edit_focus_requested: false,
             show_capabilities: false,
             formula_is_focused: false,
+            show_sheet_source: false,
+            capture_path: None,
+            capture_frames: 0,
         };
+        let _ = app.workbook.rename_sheet(0, "Trang tính1");
+        app.workbook.dirty = false;
         if let Some(path) = initial_file {
             app.path_buffer = path.display().to_string();
             app.open_path_value(path);
@@ -247,6 +182,13 @@ impl NomSheetApp {
         };
         match result {
             Ok(workbook) => {
+                let end = workbook
+                    .active()
+                    .used_range()
+                    .map(|range| range.end)
+                    .unwrap_or(CellAddress { row: 1, column: 1 });
+                self.grid_columns = end.column.max(26);
+                self.grid_rows = end.row.max(1000);
                 self.workbook = workbook;
                 self.selected = CellAddress { row: 1, column: 1 };
                 self.selection_end = None;
@@ -330,7 +272,11 @@ impl NomSheetApp {
 
     fn create_workbook(&mut self) {
         self.workbook = Workbook::default();
+        let _ = self.workbook.rename_sheet(0, "Trang tính1");
+        self.workbook.dirty = false;
         self.selected = CellAddress { row: 1, column: 1 };
+        self.grid_columns = 26;
+        self.grid_rows = 1000;
         self.selection_end = None;
         self.path_buffer.clear();
         self.undo_stack.clear();
@@ -428,6 +374,15 @@ impl NomSheetApp {
     }
 
     fn refresh_bars(&mut self) {
+        let end = self.selection_end.unwrap_or(self.selected);
+        if end.column < MAX_COLUMNS {
+            self.grid_columns = self.grid_columns.max(end.column);
+        }
+        if end.row < MAX_ROWS {
+            self.grid_rows = self.grid_rows.max(end.row);
+        }
+        self.grid_columns = self.grid_columns.max(self.selected.column);
+        self.grid_rows = self.grid_rows.max(self.selected.row);
         self.formula_buffer = match self.workbook.active().get(self.selected) {
             CellValue::Formula(formula) => format!("={formula}"),
             value => value.display_text(),
@@ -518,6 +473,8 @@ impl NomSheetApp {
                     ));
                     after.push((addr, val.clone(), self.workbook.active().get_style(addr).cloned()));
                     self.workbook.active_mut().set(addr, val.clone());
+                    self.grid_columns = self.grid_columns.max(col_num);
+                    self.grid_rows = self.grid_rows.max(row_num);
                 }
             }
         }
@@ -793,9 +750,6 @@ impl NomSheetApp {
 
 impl eframe::App for NomSheetApp {
     fn update(&mut self, context: &Context, _frame: &mut eframe::Frame) {
-        #[cfg(target_os = "windows")]
-        set_light_native_titlebar();
-
         self.handle_keyboard(context);
 
         self.render_chrome(context);
@@ -809,6 +763,9 @@ impl eframe::App for NomSheetApp {
                 }
                 self.draw_grid(ui);
             });
+        self.render_source_dialog(context);
+        self.render_window_resize(context);
+        self.capture_visual_frame(context);
 
         // 8. DIALOGS: Rename Sheet Modal
         if let Some(idx) = self.rename_sheet_idx {
