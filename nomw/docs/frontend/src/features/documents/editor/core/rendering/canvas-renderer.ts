@@ -6,6 +6,15 @@ export class CanvasRenderer {
   private static imageCache: Map<string, HTMLImageElement> = new Map();
   private static offscreenMap = new WeakMap<HTMLCanvasElement, HTMLCanvasElement>();
 
+  public static releaseCanvas(canvas: HTMLCanvasElement): void {
+    const offscreen = this.offscreenMap.get(canvas);
+    if (offscreen) {
+      offscreen.width = offscreen.height = 0;
+      this.offscreenMap.delete(canvas);
+    }
+    canvas.width = canvas.height = 0;
+  }
+
   private static getOffscreenCanvas(target: HTMLCanvasElement, width: number, height: number): HTMLCanvasElement | null {
     if (typeof document === 'undefined') return null;
     let offscreen = CanvasRenderer.offscreenMap.get(target);

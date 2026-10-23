@@ -118,20 +118,17 @@ export class LayoutEngine {
     let currentY = contentRect.y;
     let currentBlocks: BlockLayout[] = [];
     let currentHitTests: HitTestEntry[] = [];
-    let currentDisplayList = new DisplayList();
 
     const startNewPage = () => {
-      this.buildPageDisplayList(currentDisplayList, settings, currentBlocks, pageWidth, pageHeight);
-      const pageLayout: PageLayout = {
+      const pageLayout = this.createLazyPageLayout(settings, {
         pageIndex: currentPageIndex,
         width: pageWidth,
         height: pageHeight,
         contentRect: { ...contentRect },
         blocks: currentBlocks,
         hitTestIndex: currentHitTests,
-        displayList: currentDisplayList.commands,
         version: doc.revision || 1,
-      };
+      });
 
       pages.push(pageLayout);
       this.pageCache.set(currentPageIndex, pageLayout);
@@ -141,7 +138,6 @@ export class LayoutEngine {
       currentY = contentRect.y;
       currentBlocks = [];
       currentHitTests = [];
-      currentDisplayList = new DisplayList();
     };
 
     const listCounters: Record<number, number> = {};
@@ -349,17 +345,15 @@ export class LayoutEngine {
     }
 
     // Finish last page
-    this.buildPageDisplayList(currentDisplayList, settings, currentBlocks, pageWidth, pageHeight);
-    const lastPage: PageLayout = {
+    const lastPage = this.createLazyPageLayout(settings, {
       pageIndex: currentPageIndex,
       width: pageWidth,
       height: pageHeight,
       contentRect: { ...contentRect },
       blocks: currentBlocks,
       hitTestIndex: currentHitTests,
-      displayList: currentDisplayList.commands,
       version: doc.revision || 1,
-    };
+    });
     pages.push(lastPage);
     this.pageCache.set(currentPageIndex, lastPage);
     this.pageHeightIndex.setPageCount(pages.length);
@@ -529,7 +523,6 @@ export class LayoutEngine {
 
     const currentBlocks: BlockLayout[] = [];
     const currentHitTests: HitTestEntry[] = [];
-    const currentDisplayList = new DisplayList();
     let currentY = contentRect.y;
 
     for (let bIdx = startBlockIdx; bIdx < endBlockIdx; bIdx++) {
@@ -631,18 +624,15 @@ export class LayoutEngine {
       currentY += paraStyle.spaceAfter || 0;
     }
 
-    this.buildPageDisplayList(currentDisplayList, settings, currentBlocks, pageWidth, pageHeight);
-
-    return {
+    return this.createLazyPageLayout(settings, {
       pageIndex,
       width: pageWidth,
       height: pageHeight,
       contentRect: { ...contentRect },
       blocks: currentBlocks,
       hitTestIndex: currentHitTests,
-      displayList: currentDisplayList.commands,
       version: doc.revision || 1,
-    };
+    });
   }
 
   /**
@@ -870,6 +860,23 @@ export class LayoutEngine {
     });
 
     return currentY + 8;
+  }
+
+  private createLazyPageLayout(settings: DocumentSettings, data: Omit<PageLayout, 'displayList'>): PageLayout {
+    let commands: PageLayout['displayList'] | undefined;
+    const build = (list: DisplayList) => this.buildPageDisplayList(list, settings, data.blocks, data.width, data.height);
+    return { ...data,
+      get displayList() {
+        if (!commands) {
+          const list = new DisplayList();
+          build(list);
+          commands = list.commands;
+        }
+        return commands;
+      },
+      get hasRenderResources() { return commands !== undefined; },
+      releaseRenderResources() { commands = undefined; },
+    };
   }
 
   private buildPageDisplayList(

@@ -109,6 +109,8 @@ export interface PageLayout {
   blocks: BlockLayout[];
   hitTestIndex: HitTestEntry[];
   displayList: PaintCommand[];
+  readonly hasRenderResources?: boolean;
+  releaseRenderResources?: () => void;
   version?: number;
 }
 

@@ -974,8 +974,6 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   const compositionManager = useMemo(() => new CompositionManager(), []);
   const hiddenInputRef = useRef<HTMLTextAreaElement | null>(null);
   const caretRef = useRef<CaretGeometry | null>(null);
-  const optimisticOverlayRef = useRef<HTMLDivElement | null>(null);
-  const optimisticTextRef = useRef("");
 
   const keyboardController = useMemo(
     () => new KeyboardController(docModelRef.current, selectionEngine, commandRegistry, () => layoutRef.current, compositionManager),
@@ -1056,7 +1054,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   const [renderedPageStart, setRenderedPageStart] = useState(0);
   const [renderedPageEnd, setRenderedPageEnd] = useState(1);
   const renderedPageRangeRef = useRef({ start: 0, end: 1 });
-  const PAGE_RENDER_OVERSCAN = 2;
+  const viewportFrameRef = useRef<number | null>(null);
 
   const [showPerfHud, setShowPerfHud] = useState(false);
   const [perfStats, setPerfStats] = useState<PerformanceStats | null>(null);
@@ -1113,16 +1111,22 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
     const stackRect = stack.getBoundingClientRect();
     const stackTop = container.scrollTop + stackRect.top - containerRect.top;
     const physicalViewportTop = Math.max(0, container.scrollTop - stackTop);
-    const physicalViewportBottom = physicalViewportTop + container.clientHeight;
+    const physicalViewportBottom = Math.max(0, container.scrollTop + container.clientHeight - stackTop);
 
     const virtualViewportTop = pageIndexTree.physicalToVirtualScrollY(physicalViewportTop, scrollRatio);
     const virtualViewportBottom = pageIndexTree.physicalToVirtualScrollY(physicalViewportBottom, scrollRatio);
 
-    const firstVisiblePage = pageIndexTree.getPageIndexAtOffset(virtualViewportTop / scale);
-    const lastVisiblePage = pageIndexTree.getPageIndexAtOffset(virtualViewportBottom / scale);
+    const top = virtualViewportTop / scale;
+    const bottom = virtualViewportBottom / scale;
+    let firstVisiblePage = pageIndexTree.getPageIndexAtOffset(top);
+    // A viewport starting in the gap must not mount the preceding page.
+    if (top >= pageIndexTree.getPageOffset(firstVisiblePage) + pageIndexTree.getPageHeight(firstVisiblePage)) {
+      firstVisiblePage = Math.min(pageCount - 1, firstVisiblePage + 1);
+    }
+    const lastVisiblePage = pageIndexTree.getPageIndexAtOffset(Math.max(0, bottom - 0.01));
 
-    const nextStart = Math.max(0, firstVisiblePage - PAGE_RENDER_OVERSCAN);
-    const nextEnd = Math.min(pageCount, lastVisiblePage + PAGE_RENDER_OVERSCAN + 1);
+    const nextStart = Math.max(0, firstVisiblePage);
+    const nextEnd = Math.max(nextStart, Math.min(pageCount, lastVisiblePage + 1));
 
     // Evict far pages from cache to maintain bounded RAM
     layoutEngine.pageCache.evictFarPages(nextStart, nextEnd, 8);
@@ -1134,6 +1138,28 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
     setRenderedPageStart((previous) => previous === nextStart ? previous : nextStart);
     setRenderedPageEnd((previous) => previous === nextEnd ? previous : nextEnd);
   }, [layout, zoom]);
+
+  const scheduleViewportUpdate = useCallback(() => {
+    if (viewportFrameRef.current !== null) return;
+    viewportFrameRef.current = window.requestAnimationFrame(() => {
+      viewportFrameRef.current = null;
+      updateRenderedPageWindow();
+    });
+  }, [updateRenderedPageWindow]);
+
+  useEffect(() => {
+    const container = docRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(scheduleViewportUpdate);
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      if (viewportFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportFrameRef.current);
+        viewportFrameRef.current = null;
+      }
+    };
+  }, [scheduleViewportUpdate]);
 
   const jumpToPage = useCallback((targetPageNum: number) => {
     const currentLayout = layoutRef.current || layout;
@@ -1174,7 +1200,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   useEffect(() => {
     const sel = selectionEngine.getSelection();
     if (!sel) return;
-    setSelectionRects(HitTester.getSelectionRectangles(sel, layoutRef.current, docModelRef.current));
+    setSelectionRects(HitTester.getSelectionRectangles(sel, layoutRef.current, docModelRef.current, renderedPageRangeRef.current));
   }, [renderedPageStart, renderedPageEnd, selectionEngine]);
 
   const selectionRectsByPage = useMemo(() => {
@@ -1211,20 +1237,6 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   const relayoutFrameRef = useRef<number | null>(null);
   const localDraftTimerRef = useRef<number | null>(null);
   const lastToolbarSignatureRef = useRef("");
-
-  const clearOptimisticOverlay = useCallback(() => {
-    optimisticTextRef.current = "";
-    const overlay = optimisticOverlayRef.current;
-    if (!overlay) return;
-    overlay.textContent = "";
-    overlay.style.display = "none";
-  }, []);
-
-  const showOptimisticText = useCallback((_text: string) => {
-    // Disabled: Direct native Canvas rendering is instantaneous (0.01ms) and completely avoids
-    // any DOM overlay positioning drift or rogue text rendering in the top-left corner.
-    clearOptimisticOverlay();
-  }, [clearOptimisticOverlay]);
 
   const scheduleLocalDraftSave = useCallback(() => {
     if (!fileKey) return;
@@ -1279,7 +1291,6 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   const performRelayout = useCallback(() => {
     const startMs = performance.now();
     performanceMonitor.recordInputStart();
-    clearOptimisticOverlay();
     isRelayoutingRef.current = true;
     textInputController.setDocument(docModelRef.current);
     keyboardController.setDocument(docModelRef.current);
@@ -1322,7 +1333,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
 
     const sel = selectionEngine.getSelection();
     if (sel) {
-      const rects = HitTester.getSelectionRectangles(sel, newLayout, docModelRef.current);
+      const rects = HitTester.getSelectionRectangles(sel, newLayout, docModelRef.current, renderedPageRangeRef.current);
       setSelectionRects(rects);
       const caretGeom = HitTester.getCaretGeometry(sel.focus, newLayout, docModelRef.current);
       if (caretGeom) {
@@ -1436,7 +1447,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
     performanceMonitor.recordInputEnd();
     isRelayoutingRef.current = false;
     scheduleLocalDraftSave();
-  }, [selectionEngine, textInputController, keyboardController, pointerController, clipboardService, clearOptimisticOverlay, scheduleLocalDraftSave, zoom]);
+  }, [selectionEngine, textInputController, keyboardController, pointerController, clipboardService, scheduleLocalDraftSave, zoom]);
 
   const renderScheduler = useMemo(
     () => new CentralRenderScheduler((pages, isCaretOnly) => {
@@ -1484,7 +1495,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
       if (isRelayoutingRef.current || relayoutFrameRef.current !== null) return;
       const selection = selectionEngine.getSelection();
       if (selection) {
-        const rects = HitTester.getSelectionRectangles(selection, layoutRef.current, docModelRef.current);
+        const rects = HitTester.getSelectionRectangles(selection, layoutRef.current, docModelRef.current, renderedPageRangeRef.current);
         setSelectionRects(rects);
         const caretGeom = HitTester.getCaretGeometry(selection.focus, layoutRef.current, docModelRef.current);
         setCaret(caretGeom);
@@ -3381,7 +3392,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
           onContextMenu={handleContextMenu}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
-          onScroll={updateRenderedPageWindow}>
+          onScroll={scheduleViewportUpdate}>
 
           {showRuler && (
             <div className="docx-ruler h-6 mb-2 bg-white border border-[#CBD5E1] text-[9px] text-[#64748B] flex items-center justify-between px-5 shadow-sm" style={{ width: pageWidth * (zoom / 100) }}>
@@ -3429,17 +3440,6 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
                     position: "relative",
                   }}
                 >
-                  <div
-                    ref={optimisticOverlayRef}
-                    aria-hidden="true"
-                    style={{
-                      position: "absolute",
-                      display: "none",
-                      whiteSpace: "pre",
-                      pointerEvents: "none",
-                      zIndex: 5,
-                    }}
-                  />
                   {topSpacerHeight > 0 && (
                     <div
                       aria-hidden="true"
@@ -3481,7 +3481,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
                           boxSizing: "border-box",
                           overflow: "hidden",
                           flexShrink: 0,
-                          margin: "0 auto 24px",
+                          margin: `0 auto ${pageIndexTree.getPageGap() * scale}px`,
                           imageRendering: "-webkit-optimize-contrast",
                           transform: "translateZ(0)",
                         }}

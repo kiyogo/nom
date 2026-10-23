@@ -48,8 +48,18 @@ export const CanvasPage: React.FC<CanvasPageProps> = React.memo(({
         console.log(`[RENDER]\n  pageIndex = ${page.pageIndex}\n  renderVersion = ${page.version || 1}`);
       }
       CanvasRenderer.renderPage(baseCanvasRef.current, page, renderDpr, zoom);
+      const canvas = baseCanvasRef.current;
+      return () => {
+        CanvasRenderer.releaseCanvas(canvas);
+        page.releaseRenderResources?.();
+      };
     }
   }, [page, page.version, pageVersion, renderDpr, zoom]);
+
+  useEffect(() => {
+    const canvas = interactionCanvasRef.current;
+    return () => { if (canvas) canvas.width = canvas.height = 0; };
+  }, []);
 
   // Render interaction canvas (selection, caret, collaborator tags)
   useEffect(() => {

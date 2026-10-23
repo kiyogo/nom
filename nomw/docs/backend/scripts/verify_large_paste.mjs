@@ -181,8 +181,71 @@ try {
     return { pasteToPaintMs: Math.round(typingStart - started), typingAndPaintMs, pages: state.layout.pages.length,
       renderedCanvases: document.querySelectorAll('canvas').length, exactText: true };
   });
+  const viewportChecks = [];
+  let currentZoom = 100;
+  for (const zoom of [60, 100, 150]) {
+    await page.evaluate(({ from, to }) => {
+      const button = document.querySelector(to > from ? '[title="Phóng to (+10%)"]' : '[title="Thu nhỏ (-10%)"]');
+      for (let step = 0; step < Math.abs(to - from) / 10; step++) button.click();
+    }, { from: currentZoom, to: zoom });
+    currentZoom = zoom;
+    await page.evaluate(async () => {
+      for (let i = 0; i < 4; i++) await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+  for (const height of [600, 1100]) {
+    await page.setViewport({ width: 1440, height });
+    for (const position of ['top', 'middle', 'gap', 'bottom']) {
+      const snapshot = await page.evaluate(async ({ position, zoom }) => {
+        const container = document.querySelector('.docx-document-container');
+        const stack = document.querySelector('.docx-page-stack');
+        const layout = window.__editorDebug.layout;
+        const index = layout.pageHeightIndex;
+        const scale = zoom / 100;
+        const stackOffset = container.scrollTop + stack.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        container.scrollTop = position === 'top' ? 0 : position === 'bottom' ? container.scrollHeight :
+          stackOffset + (position === 'gap' ? index.getPageOffset(8) + index.getPageHeight(8) + 5 : index.getPageOffset(10) + 180) * scale;
+        // Let scroll, range update, mount, and effect cleanup settle.
+        for (let i = 0; i < 5; i++) await new Promise(resolve => requestAnimationFrame(resolve));
+        const bounds = container.getBoundingClientRect();
+        const mounted = [...container.querySelectorAll('.docx-page')];
+        const stackTop = stack.getBoundingClientRect().top;
+        const expected = layout.pages.filter(page => {
+          const top = stackTop + index.getPageOffset(page.pageIndex) * scale;
+          return top < bounds.bottom && top + page.height * scale > bounds.top;
+        }).map(page => page.pageIndex);
+        const released = (window.previousTestCanvases || []).filter(canvas => !canvas.isConnected);
+        const buffersReleased = released.every(canvas => canvas.width === 0 && canvas.height === 0);
+        window.previousTestCanvases = [...container.querySelectorAll('canvas')];
+        return {
+          expected, buffersReleased,
+          mounted: mounted.map(el => Number(el.dataset.pageIndex)),
+          outside: mounted.filter(el => {
+            const rect = el.getBoundingClientRect();
+            return rect.bottom <= bounds.top || rect.top >= bounds.bottom;
+          }).map(el => Number(el.dataset.pageIndex)),
+          resourcePages: layout.pages.filter(page => page.hasRenderResources).map(page => page.pageIndex),
+          canvasCount: container.querySelectorAll('canvas').length,
+          contentEditableCount: container.querySelectorAll('[contenteditable="true"]').length,
+        };
+      }, { position, zoom });
+      assert.ok(snapshot.mounted.length > 0 && snapshot.mounted.length <= 3, 'Only visible pages are mounted');
+      assert.deepEqual(snapshot.outside, [], 'No offscreen pages are mounted');
+      assert.deepEqual(snapshot.mounted, snapshot.expected, 'Every visible page is mounted');
+      assert.ok(snapshot.buffersReleased, 'Offscreen canvas pixel buffers released');
+      assert.deepEqual(snapshot.resourcePages, snapshot.mounted, 'Only visible pages retain draw commands');
+      assert.equal(snapshot.canvasCount, snapshot.mounted.length * 2, 'Two canvases per visible page');
+      assert.equal(snapshot.contentEditableCount, 0, 'No DOM document content');
+      viewportChecks.push({ zoom, height, position, ...snapshot });
+    }
+  }
+  }
   await page.evaluate(() => window.pasteTestRoot.unmount());
   result.mountedEditor = uiResult;
+  result.viewportChecks = {
+    cases: viewportChecks.length, zoomLevels: [60, 100, 150],
+    maxMountedPages: Math.max(...viewportChecks.map(check => check.mounted.length)),
+    onlyVisiblePages: true, offscreenBuffersReleased: true, canvasLayersPerPage: 2,
+  };
   console.log(JSON.stringify(result, null, 2));
 } finally {
   await browser.close();
