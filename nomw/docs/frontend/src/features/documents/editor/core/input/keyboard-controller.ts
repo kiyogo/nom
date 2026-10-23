@@ -96,9 +96,8 @@ export class KeyboardController {
       return true;
     }
     if (mod && (key === 'v' || key === 'V')) {
-      // Native paste supplies text + HTML once. Reading the clipboard from
-      // keydown races the paste event and repeats while Ctrl+V is held.
-      if (e.repeat) e.preventDefault();
+      // Let each native paste event insert once, including key auto-repeat.
+      // Do not also read/insert clipboard data from the keydown handler.
       return false;
     }
 

@@ -2560,7 +2560,6 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
 
         // 13. Ctrl + V -> Dán
         if (key === "v" && !isSearchInput) {
-          if (e.repeat) e.preventDefault();
           // Keep the browser's single native paste event (including HTML).
           // Focus the editor when paste was invoked with a ribbon button focused.
           textInputController.focus();

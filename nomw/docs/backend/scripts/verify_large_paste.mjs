@@ -100,7 +100,7 @@ try {
     const keyboard = new KeyboardController(replace.doc, replace.selection, replace.commands, () => replace.layout);
     const repeated = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, repeat: true, cancelable: true });
     keyboard.handleKeyDown(repeated);
-    check(repeated.defaultPrevented, 'Holding Ctrl+V suppresses repeated pastes');
+    check(!repeated.defaultPrevented, 'Holding Ctrl+V permits native repeated pastes');
     const normalPasteKey = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true });
     keyboard.handleKeyDown(normalPasteKey);
     check(!normalPasteKey.defaultPrevented, 'Normal Ctrl+V reaches native paste event');
@@ -178,6 +178,24 @@ try {
     window.__editorDebug.commandRegistry.execute('redo');
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (window.__editorDebug.doc.blocks.map(block => window.__editorDebug.doc.getBlockText(block)).join('\n') !== text) throw Error('Redo paste in mounted editor failed');
+    const repeatText = ' dán tiếp'.repeat(500);
+    for (let i = 0; i < 3; i++) {
+      const key = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, repeat: true, bubbles: true, cancelable: true });
+      input.dispatchEvent(key);
+      if (key.defaultPrevented) throw Error('Mounted editor blocked held Ctrl+V');
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', repeatText);
+      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    if (window.__editorDebug.doc.blocks.map(block => window.__editorDebug.doc.getBlockText(block)).join('\n') !== text + repeatText.repeat(3)) {
+      throw Error('Held Ctrl+V did not insert exactly once per native paste');
+    }
+    for (let i = 0; i < 3; i++) window.__editorDebug.commandRegistry.execute('undo');
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (window.__editorDebug.doc.blocks.map(block => window.__editorDebug.doc.getBlockText(block)).join('\n') !== text) {
+      throw Error('Repeated native pastes were not individually undoable');
+    }
     return { pasteToPaintMs: Math.round(typingStart - started), typingAndPaintMs, pages: state.layout.pages.length,
       renderedCanvases: document.querySelectorAll('canvas').length, exactText: true };
   });
