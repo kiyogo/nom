@@ -46,6 +46,15 @@ export class ParagraphLayoutCache {
     }
   }
 
+  public invalidateBlocks(blockIds: ReadonlySet<string>): void {
+    // Invalidate a pasted range in one pass, rather than scanning the entire
+    // paragraph cache separately for every changed paragraph.
+    for (const key of this.cache.keys()) {
+      const versionStart = key.indexOf('_v');
+      if (versionStart >= 0 && blockIds.has(key.slice(0, versionStart))) this.cache.delete(key);
+    }
+  }
+
   public clear(): void {
     this.cache.clear();
   }

@@ -67,6 +67,13 @@ export interface InsertBlockOp {
   block: BlockNode;
 }
 
+export interface ReplaceBlockRangeOp {
+  type: 'replace-block-range';
+  startBlockId: string;
+  endBlockId: string;
+  blocks: BlockNode[];
+}
+
 export interface DeleteBlockOp {
   type: 'delete-block';
   blockId: string;
@@ -94,6 +101,7 @@ export type EditorOperation =
   | SetTextStyleOp
   | SetParagraphStyleOp
   | InsertBlockOp
+  | ReplaceBlockRangeOp
   | DeleteBlockOp
   | SetDocumentSettingsOp
   | SetDocumentTitleOp;
@@ -103,6 +111,24 @@ export type EditorOperation =
  */
 export function applyOperation(op: EditorOperation, doc: DocumentModel): EditorOperation | null {
   switch (op.type) {
+    case 'replace-block-range': {
+      const start = doc.getBlockLocation(op.startBlockId);
+      const end = doc.getBlockLocation(op.endBlockId);
+      if (!start || !end || start.parentArray !== end.parentArray || end.index < start.index || !op.blocks.length) return null;
+      const removed = start.parentArray.slice(start.index, end.index + 1);
+      // Clone both directions so later typing cannot mutate undo/redo payloads.
+      const inserted = structuredClone(op.blocks);
+      start.parentArray.splice(start.index, removed.length, ...inserted);
+      for (const block of removed) doc.markDirty(block.id);
+      for (const block of inserted) doc.incrementBlockVersion(block.id);
+      doc.invalidateBlockIndexMap();
+      return {
+        type: 'replace-block-range',
+        startBlockId: inserted[0].id,
+        endBlockId: inserted[inserted.length - 1].id,
+        blocks: removed,
+      };
+    }
     case 'insert-text': {
       let block = doc.getBlockById(op.blockId);
       if (block && block.type === 'table') {

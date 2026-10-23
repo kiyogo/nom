@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.mjs",
-    "dev": "node --watch src/server.mjs"
+    "dev": "node --watch src/server.mjs",
+    "test:paste": "node scripts/verify_large_paste.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

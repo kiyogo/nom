@@ -37,6 +37,8 @@ export const CanvasPage: React.FC<CanvasPageProps> = React.memo(({
 }) => {
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const interactionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const latestPageRef = useRef(page);
+  latestPageRef.current = page;
   const renderDpr = dpr || (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
 
   // Render base content canvas
@@ -74,16 +76,21 @@ export const CanvasPage: React.FC<CanvasPageProps> = React.memo(({
   useEffect(() => {
     if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) {
       let isMounted = true;
-      document.fonts.ready.then(() => {
+      const repaint = () => {
         if (isMounted && baseCanvasRef.current) {
-          CanvasRenderer.renderPage(baseCanvasRef.current, page, renderDpr, zoom);
+          CanvasRenderer.renderPage(baseCanvasRef.current, latestPageRef.current, renderDpr, zoom);
         }
-      });
+      };
+      // The base effect already painted loaded fonts. Repainting again after
+      // every resolved fonts.ready promise doubled work on each input frame.
+      if (document.fonts.status === 'loading') void document.fonts.ready.then(repaint);
+      document.fonts.addEventListener('loadingdone', repaint);
       return () => {
         isMounted = false;
+        document.fonts.removeEventListener('loadingdone', repaint);
       };
     }
-  }, [page, renderDpr, zoom]);
+  }, [renderDpr, zoom]);
 
   const displayWidth = Math.round(page.width * zoom);
   const displayHeight = Math.round(page.height * zoom);

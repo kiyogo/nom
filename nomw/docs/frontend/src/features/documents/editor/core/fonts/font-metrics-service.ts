@@ -22,6 +22,13 @@ export class FontMetricsService {
   private widthCache: Map<string, number> = new Map();
   private clusterCache: Map<string, ClusterMeasurement[]> = new Map();
 
+  private storeBounded<T>(cache: Map<string, T>, key: string, value: T, limit: number): void {
+    // Do not retain a growing copy of an entire pasted paragraph per keystroke.
+    if (key.length > 2048) return;
+    if (cache.size >= limit && !cache.has(key)) cache.delete(cache.keys().next().value!);
+    cache.set(key, value);
+  }
+
   constructor() {
     this.initContext();
   }
@@ -111,7 +118,7 @@ export class FontMetricsService {
       lineHeightPx,
     };
 
-    this.metricsCache.set(key, result);
+    this.storeBounded(this.metricsCache, key, result, 2048);
     return result;
   }
 
@@ -140,7 +147,7 @@ export class FontMetricsService {
       width = text.length * (fontSizePx * 0.55);
     }
 
-    this.widthCache.set(key, width);
+    this.storeBounded(this.widthCache, key, width, 32768);
     return width;
   }
 
@@ -193,7 +200,7 @@ export class FontMetricsService {
       prevX = currentX;
     }
 
-    this.clusterCache.set(key, result);
+    this.storeBounded(this.clusterCache, key, result, 2048);
     return result;
   }
 

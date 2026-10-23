@@ -17,6 +17,7 @@ import {
   TextLineLayout,
   HitTestEntry,
   Rect,
+  PositionedRun,
 } from './layout-types';
 import { layoutParagraphLines, ParagraphLayoutResult } from './line-breaker';
 import { DisplayList } from '../rendering/display-list';
@@ -31,12 +32,26 @@ export interface LayoutOptions {
   forceFull?: boolean;
 }
 
+function shiftRun(run: PositionedRun, dy: number): PositionedRun {
+  let clusters: PositionedRun['clusters'] | undefined;
+  // Explicit fields avoid spreading the lazy clusters getter during pagination.
+  return {
+    runId: run.runId, text: run.text, marks: run.marks,
+    x: run.x, y: run.y + dy, width: run.width, height: run.height,
+    baseline: run.baseline + dy, startOffset: run.startOffset, endOffset: run.endOffset,
+    get clusters() { return clusters ??= run.clusters.map(cluster => ({ ...cluster, y: cluster.y + dy })); },
+  };
+}
+
 export class LayoutEngine {
   public paragraphCache = new ParagraphLayoutCache(5000);
   public pageCache = new LRUPageLayoutCache(60);
   public pageHeightIndex = new PageHeightIndex(1, 1123, 794, 24);
   private blockToPageMap: Map<string, number> = new Map();
   private pageBlockRanges: Map<number, { startBlockIdx: number; startLineIdx: number }> = new Map();
+  private recentParagraphs = new Map<string, {
+    text: string; marks: string; style: string; result: ParagraphLayoutResult;
+  }>();
 
   /**
    * Layouts a DocumentModel with instant first render, on-demand pagination,
@@ -63,22 +78,19 @@ export class LayoutEngine {
 
     // Invalidate caches for any dirty blocks before re-layout
     if (doc.dirtyBlockIds && doc.dirtyBlockIds.size > 0) {
-      for (const dirtyId of doc.dirtyBlockIds) {
-        this.paragraphCache.invalidateBlock(dirtyId);
-        const pageIdx = this.blockToPageMap.get(dirtyId);
-        if (pageIdx !== undefined) {
-          this.pageCache.invalidatePage(pageIdx);
-        }
-      }
+      this.paragraphCache.invalidateBlocks(doc.dirtyBlockIds);
       this.pageCache.clear();
     }
 
     const totalBlocks = doc.blocks.length;
     const maxInitial = options?.maxInitialPages ?? 3;
 
-    // Small document fast-path (< 100 blocks): Paginate fully upfront
-    if (totalBlocks < 100 && !options?.forceFull && !(doc.settings as any).virtualPageCount) {
-      return this.layoutSmallDocument(doc, settings, pageWidth, pageHeight, contentRect, pageGap);
+    // Real documents need exact pagination. The synthetic virtual-page demo
+    // assigns 15 blocks per page and cannot split long paragraphs correctly.
+    if (options?.forceFull || !(doc.settings as any).virtualPageCount) {
+      const result = this.layoutSmallDocument(doc, settings, pageWidth, pageHeight, contentRect, pageGap);
+      doc.clearDirty();
+      return result;
     }
 
     // Large/Massive document path (up to 1,000,000 pages):
@@ -298,12 +310,7 @@ export class LayoutEngine {
           pageIndex: currentPageIndex,
           rect: { ...line.rect, y: line.rect.y + dy },
           baseline: line.baseline + dy,
-          runs: line.runs.map((r) => ({
-            ...r,
-            y: r.y + dy,
-            baseline: r.baseline + dy,
-            clusters: r.clusters.map((cl) => ({ ...cl, y: cl.y + dy })),
-          })),
+          runs: line.runs.map(run => shiftRun(run, dy)),
         };
 
         linesForCurrentBlock.push(positionedLine);
@@ -316,7 +323,7 @@ export class LayoutEngine {
           baseline: positionedLine.baseline,
           startOffset: positionedLine.startOffset,
           endOffset: positionedLine.endOffset,
-          clusters: positionedLine.runs.flatMap((r) => r.clusters),
+          get clusters() { return positionedLine.runs.flatMap(run => run.clusters); },
         });
 
         currentY += lineH;
@@ -589,12 +596,7 @@ export class LayoutEngine {
           pageIndex,
           rect: { ...line.rect, y: line.rect.y + dy },
           baseline: line.baseline + dy,
-          runs: line.runs.map((r) => ({
-            ...r,
-            y: r.y + dy,
-            baseline: r.baseline + dy,
-            clusters: r.clusters.map((cl) => ({ ...cl, y: cl.y + dy })),
-          })),
+          runs: line.runs.map(run => shiftRun(run, dy)),
         };
 
         positionedLines.push(pLine);
@@ -607,7 +609,7 @@ export class LayoutEngine {
           baseline: pLine.baseline,
           startOffset: pLine.startOffset,
           endOffset: pLine.endOffset,
-          clusters: pLine.runs.flatMap((r) => r.clusters),
+          get clusters() { return pLine.runs.flatMap(run => run.clusters); },
         });
 
         currentY += line.rect.height;
@@ -655,7 +657,7 @@ export class LayoutEngine {
   ): ParagraphLayoutResult {
     const version = doc.getBlockVersion(block.id);
     const paraStyle: ParagraphStyle = (block.style || {}) as ParagraphStyle;
-    const styleHash = `${paraStyle.alignment || 'left'}_${paraStyle.lineHeight || 1.15}`;
+    const styleHash = JSON.stringify([doc.id, paraStyle, startX, leftMarginShift]);
     const cacheKey = ParagraphLayoutCache.makeKey(block.id, version, contentWidth, styleHash);
 
     const cached = this.paragraphCache.get(cacheKey);
@@ -663,7 +665,12 @@ export class LayoutEngine {
       return cached;
     }
 
-    const computed = layoutParagraphLines({
+    const paragraphKey = `${doc.id}:${block.id}`;
+    const text = block.runs.length === 1 ? block.runs[0].text : '';
+    const marks = JSON.stringify(block.runs[0]?.marks || {});
+    const styleKey = `${contentWidth}:${styleHash}`;
+    const previous = this.recentParagraphs.get(paragraphKey);
+    const input = {
       blockId: block.id,
       runs: block.runs,
       style: {
@@ -673,9 +680,44 @@ export class LayoutEngine {
       contentWidth,
       startX,
       startY: 0, // normalized baseline at 0
-    });
+    };
+    let computed: ParagraphLayoutResult;
+    if (previous && previous.text.length > 4096 && previous.result.lines.length > 1 &&
+        text.length > previous.text.length && text.startsWith(previous.text) &&
+        previous.marks === marks && previous.style === styleKey) {
+      // Appending to a long paragraph only changes its last line and new lines.
+      // Reuse the already paginated prefix instead of segmenting 10,000 words
+      // again on each keystroke. Formatting/edits elsewhere use the full path.
+      const prefix = previous.result.lines.slice(0, -1);
+      const lastLine = previous.result.lines[previous.result.lines.length - 1];
+      const offset = lastLine.startOffset;
+      const tail = layoutParagraphLines({ ...input,
+        runs: [{ ...block.runs[0], text: text.slice(offset) }],
+        style: { ...input.style, firstLineIndent: 0 }, startY: lastLine.rect.y });
+      const tailLines = tail.lines.map(line => ({ ...line,
+        lineIndex: line.lineIndex + prefix.length,
+        startOffset: line.startOffset + offset, endOffset: line.endOffset + offset,
+        runs: line.runs.map(run => ({
+          runId: run.runId, text: run.text, marks: run.marks, x: run.x, y: run.y,
+          width: run.width, height: run.height, baseline: run.baseline,
+          startOffset: run.startOffset + offset, endOffset: run.endOffset + offset,
+          get clusters() { return run.clusters.map(cluster => ({ ...cluster, offsetInBlock: cluster.offsetInBlock + offset })); },
+        })),
+      }));
+      computed = { lines: [...prefix, ...tailLines], totalHeight: lastLine.rect.y + tail.totalHeight };
+    } else {
+      computed = layoutParagraphLines(input);
+    }
 
     this.paragraphCache.set(cacheKey, computed);
+    if (text) {
+      if (this.recentParagraphs.size >= 32 && !this.recentParagraphs.has(paragraphKey)) {
+        this.recentParagraphs.delete(this.recentParagraphs.keys().next().value!);
+      }
+      this.recentParagraphs.set(paragraphKey, { text, marks, style: styleKey, result: computed });
+    } else {
+      this.recentParagraphs.delete(paragraphKey);
+    }
     return computed;
   }
 

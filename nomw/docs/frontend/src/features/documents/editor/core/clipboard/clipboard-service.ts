@@ -6,11 +6,13 @@ import { isSelectionCollapsed, normalizeSelection } from '../selection/position'
 import { sanitizeHtml } from './html-sanitizer';
 import { BlockNode, ParagraphBlock, TextRun } from '../model/types';
 import { generateBlockId, generateRunId } from '../utils/id-generator';
+import { htmlToDocumentModel } from '../model/serialization';
 
 export class ClipboardService {
   private doc: DocumentModel;
   private selectionEngine: SelectionEngine;
   private commands: CommandRegistry;
+  private pasteInFlight = false;
 
   constructor(
     doc: DocumentModel,
@@ -74,6 +76,17 @@ export class ClipboardService {
    * Paste clipboard event data or native clipboard
    */
   public async paste(clipboardEvent?: ClipboardEvent): Promise<boolean> {
+    clipboardEvent?.preventDefault();
+    if (this.pasteInFlight) return false;
+    this.pasteInFlight = true;
+    try {
+      return await this.readAndPaste(clipboardEvent);
+    } finally {
+      this.pasteInFlight = false;
+    }
+  }
+
+  private async readAndPaste(clipboardEvent?: ClipboardEvent): Promise<boolean> {
     let plainText = '';
     let htmlText = '';
 
@@ -109,32 +122,17 @@ export class ClipboardService {
       const sanitized = sanitizeHtml(htmlText);
       const blocks = this.parseHtmlToBlocks(sanitized);
       if (blocks.length > 0) {
-        // Insert parsed blocks
-        for (const b of blocks) {
-          if ('runs' in b && b.runs.length > 0) {
-            for (const r of b.runs) {
-              this.commands.execute('insertText', { text: r.text, marks: r.marks });
-            }
-            if (blocks.length > 1) {
-              this.commands.execute('insertParagraph');
-            }
-          }
-        }
-        return true;
+        return this.commands.execute('pasteBlocks', { blocks });
       }
     }
 
     if (plainText) {
-      const lines = plainText.split(/\r?\n/);
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].length > 0) {
-          this.commands.execute('insertText', { text: lines[i] });
-        }
-        if (i < lines.length - 1) {
-          this.commands.execute('insertParagraph');
-        }
-      }
-      return true;
+      const marks = this.selectionEngine.getActiveMarks(this.doc);
+      const blocks = plainText.split(/\r\n?|\n/).map(text => ({
+        id: generateBlockId('para'), type: 'paragraph' as const,
+        style: {}, runs: [{ id: generateRunId(), text, marks: { ...marks } }],
+      }));
+      return this.commands.execute('pasteBlocks', { blocks });
     }
 
     return false;
@@ -168,24 +166,6 @@ export class ClipboardService {
   }
 
   private parseHtmlToBlocks(html: string): BlockNode[] {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    const nodes = Array.from(doc.body.children);
-    if (nodes.length === 0) return [];
-
-    const blocks: BlockNode[] = [];
-    for (const node of nodes) {
-      const tag = node.tagName.toLowerCase();
-      const text = node.textContent || '';
-      if (['p', 'div', 'h1', 'h2', 'h3', 'li'].includes(tag)) {
-        blocks.push({
-          id: generateBlockId('para'),
-          type: tag.startsWith('h') ? 'heading' : 'paragraph',
-          style: { alignment: 'left', lineHeight: 1.25 },
-          runs: [{ id: generateRunId(), text, marks: {} }],
-        } as any);
-      }
-    }
-    return blocks;
+    return htmlToDocumentModel(html).blocks.filter(block => 'runs' in block);
   }
 }

@@ -96,9 +96,10 @@ export class KeyboardController {
       return true;
     }
     if (mod && (key === 'v' || key === 'V')) {
-      e.preventDefault();
-      this.executeCommand('paste');
-      return true;
+      // Native paste supplies text + HTML once. Reading the clipboard from
+      // keydown races the paste event and repeats while Ctrl+V is held.
+      if (e.repeat) e.preventDefault();
+      return false;
     }
 
     // 4. Formatting Shortcuts

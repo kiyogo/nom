@@ -988,7 +988,8 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   // The pointer controller needs the newest calculated layout when turning a
   // click on a canvas into a document position.  A ref avoids closing over the
   // initial (empty) layout while keeping the controller instance stable.
-  const layoutRef = useRef<DocumentLayout>(layoutEngine.layoutDocument(docModelRef.current));
+  const [initialLayout] = useState(() => layoutEngine.layoutDocument(docModelRef.current));
+  const layoutRef = useRef<DocumentLayout>(initialLayout);
   const pointerController = useMemo(
     () => new PointerController(docModelRef.current, selectionEngine, () => layoutRef.current, commandRegistry),
     [selectionEngine, commandRegistry]
@@ -1453,8 +1454,10 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   );
 
   const triggerRelayout = useCallback(() => {
-    performRelayout();
-  }, [performRelayout]);
+    renderScheduler.schedulePage(0);
+  }, [renderScheduler]);
+
+  useEffect(() => () => renderScheduler.cancel(), [renderScheduler]);
 
   // Re-layout and re-render automatically when document fonts finish loading
   useEffect(() => {
@@ -2269,8 +2272,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
 
   const handlePaste = useCallback(async () => {
     await clipboardService.paste();
-    triggerRelayout();
-  }, [clipboardService, triggerRelayout]);
+  }, [clipboardService]);
 
   const handleCut = useCallback(async () => {
     await clipboardService.cut();
@@ -2547,9 +2549,10 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
 
         // 13. Ctrl + V -> Dán
         if (key === "v" && !isSearchInput) {
-          e.preventDefault();
-          e.stopPropagation();
-          clipboardService.paste();
+          if (e.repeat) e.preventDefault();
+          // Keep the browser's single native paste event (including HTML).
+          // Focus the editor when paste was invoked with a ribbon button focused.
+          textInputController.focus();
           return;
         }
 
@@ -2596,7 +2599,7 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
 
     window.addEventListener("keydown", handleGlobalKeyDown, true);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown, true);
-  }, [open, handleSave, exec, clipboardService, keyboardController, commandRegistry, triggerRelayout, notify]);
+  }, [open, handleSave, exec, clipboardService, keyboardController, textInputController, commandRegistry, triggerRelayout, notify]);
 
   // Zoom on Ctrl + Wheel / Cmd + Wheel (up to 500%)
   useEffect(() => {
@@ -3527,6 +3530,11 @@ export const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
                     spellCheck="false"
                     aria-hidden="true"
                     onKeyDown={(e) => keyboardController.handleKeyDown(e.nativeEvent)}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void clipboardService.paste(e.nativeEvent);
+                    }}
                     style={{
                       position: 'fixed',
                       top: '-10000px',

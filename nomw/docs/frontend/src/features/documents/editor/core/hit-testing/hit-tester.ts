@@ -294,7 +294,7 @@ export class HitTester {
     let pages: PageLayout[];
     if (pageRange) {
       pages = layout.pages.slice(Math.max(0, pageRange.start), Math.max(pageRange.start, pageRange.end));
-    } else if (layout.pages.length > 20) {
+    } else if (layout.pages.length > 20 && (doc.settings as any).virtualPageCount) {
       const targetPage = layoutEngine.getBlockPageIndex(pos.blockId);
       const startP = Math.max(0, targetPage - 1);
       const endP = Math.min(layout.pages.length, targetPage + 2);
@@ -497,7 +497,7 @@ export class HitTester {
     let pages: PageLayout[];
     if (pageRange) {
       pages = layout.pages.slice(Math.max(0, pageRange.start), Math.max(pageRange.start, pageRange.end));
-    } else if (layout.pages.length > 20) {
+    } else if (layout.pages.length > 20 && (doc.settings as any).virtualPageCount) {
       const startPage = layoutEngine.getBlockPageIndex(start.blockId);
       const endPage = layoutEngine.getBlockPageIndex(end.blockId);
       const startP = Math.max(0, Math.min(startPage, endPage) - 1);
