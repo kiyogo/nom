@@ -77,7 +77,6 @@ pub struct NomSheetApp {
     first_column: u16,
     status: String,
     editing_cell: bool,
-    path_is_focused: bool,
     name_box_is_focused: bool,
     search_is_focused: bool,
     pending_action: Option<PendingAction>,
@@ -194,12 +193,11 @@ impl NomSheetApp {
             first_column: 1,
             status: "Sẵn sàng".into(),
             editing_cell: false,
-            path_is_focused: false,
             name_box_is_focused: false,
             search_is_focused: false,
             pending_action: None,
             confirm_format_loss: false,
-            active_ribbon_tab: RibbonTab::Home,
+            active_ribbon_tab: RibbonTab::File,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             internal_clipboard: String::new(),
@@ -661,7 +659,6 @@ impl NomSheetApp {
 
     fn handle_keyboard(&mut self, context: &Context) {
         if self.editing_cell
-            || self.path_is_focused
             || self.name_box_is_focused
             || self.search_is_focused
             || self.formula_is_focused
@@ -799,9 +796,6 @@ impl eframe::App for NomSheetApp {
         #[cfg(target_os = "windows")]
         set_light_native_titlebar();
 
-        if self.active_ribbon_tab != RibbonTab::File {
-            self.path_is_focused = false;
-        }
         self.handle_keyboard(context);
 
         self.render_chrome(context);

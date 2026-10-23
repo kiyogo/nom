@@ -19,6 +19,24 @@ fn group(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
     );
 }
 
+fn command_group(ui: &mut Ui, caption: &str, width: f32, content: impl FnOnce(&mut Ui)) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 68.0),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.horizontal_centered(content);
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.label(RichText::new(caption).size(9.0).color(RIBBON_MUTED));
+            });
+        },
+    );
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 62.0), egui::Sense::hover());
+    ui.painter().line_segment(
+        [rect.center_top(), rect.center_bottom()],
+        Stroke::new(1.0_f32, RIBBON_BORDER),
+    );
+}
+
 impl NomSheetApp {
     pub(super) fn render_chrome(&mut self, ctx: &Context) {
         egui::TopBottomPanel::top("docs-header").frame(frame()).show(ctx, |ui| {
@@ -117,27 +135,69 @@ impl NomSheetApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| match self.active_ribbon_tab {
                         RibbonTab::File => {
-                            if icons::button(ui, Icon::New, "Bảng tính mới · Ctrl+N", Some("Mới"), false) {
-                                self.request_new();
-                            }
-                            if icons::button(ui, Icon::Open, "Mở .xlsx / .csv · Ctrl+O", Some("Mở tệp"), false) {
-                                self.choose_open_file();
-                            }
-                            if icons::button(ui, Icon::Save, "Lưu · Ctrl+S", Some("Lưu"), false) {
-                                self.save_path();
-                            }
-                            if icons::button(ui, Icon::Save, "Chọn vị trí và định dạng lưu", Some("Lưu thành"), false)
-                            {
-                                self.choose_save_file();
-                            }
-                            ui.vertical(|ui| {
-                                ui.label("Đường dẫn tệp");
-                                let r = ui.add_sized(
-                                    [380.0, 26.0],
-                                    egui::TextEdit::singleline(&mut self.path_buffer)
-                                        .hint_text("Mở hoặc lưu tệp XLSX / CSV"),
-                                );
-                                self.path_is_focused = r.has_focus();
+                            command_group(ui, "Tệp", 116.0, |ui| {
+                                if icons::button_with_color(ui, Icon::Save, "Lưu · Ctrl+S", Some("Lưu"), false, BLUE)
+                                {
+                                    self.save_path();
+                                }
+                                if icons::button_with_color(
+                                    ui,
+                                    Icon::Save,
+                                    "Lưu thành XLSX hoặc CSV",
+                                    Some("Lưu thành"),
+                                    false,
+                                    BLUE,
+                                ) {
+                                    self.choose_save_file();
+                                }
+                            });
+                            command_group(ui, "Nhập tệp", 72.0, |ui| {
+                                if icons::button_with_color(
+                                    ui,
+                                    Icon::Open,
+                                    "Mở XLSX hoặc CSV · Ctrl+O",
+                                    Some("Mở"),
+                                    false,
+                                    BLUE,
+                                ) {
+                                    self.choose_open_file();
+                                }
+                            });
+                            command_group(ui, "Xuất", 58.0, |ui| {
+                                if icons::button_with_color(
+                                    ui,
+                                    Icon::Download,
+                                    "Xuất sheet hiện tại thành CSV UTF-8",
+                                    Some("Tải CSV"),
+                                    false,
+                                    Color32::from_rgb(0, 160, 110),
+                                ) {
+                                    self.choose_save_csv_file();
+                                }
+                            });
+                            command_group(ui, "Tạo", 58.0, |ui| {
+                                if icons::button_with_color(
+                                    ui,
+                                    Icon::New,
+                                    "Bảng tính mới · Ctrl+N",
+                                    Some("Mới"),
+                                    false,
+                                    BLUE,
+                                ) {
+                                    self.request_new();
+                                }
+                            });
+                            command_group(ui, "Trợ giúp", 72.0, |ui| {
+                                if icons::button_with_color(
+                                    ui,
+                                    Icon::Keyboard,
+                                    "Phím tắt và phạm vi tính năng",
+                                    Some("Phím tắt"),
+                                    false,
+                                    BLUE,
+                                ) {
+                                    self.show_capabilities = true;
+                                }
                             });
                         }
                         RibbonTab::Home | RibbonTab::Review => {
@@ -425,9 +485,7 @@ impl NomSheetApp {
                     ui.add_space(26.0);
                     let edit = ui.add_sized(
                         [ui.available_width(), 24.0],
-                        egui::TextEdit::singleline(&mut self.formula_buffer)
-                            .frame(false)
-                            .hint_text("Nhập giá trị hoặc công thức"),
+                        egui::TextEdit::singleline(&mut self.formula_buffer).frame(false),
                     );
                     self.formula_is_focused = edit.has_focus();
                     if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {

@@ -69,6 +69,20 @@ impl NomSheetApp {
             self.save_path();
         }
     }
+
+    pub(super) fn choose_save_csv_file(&mut self) {
+        let initial = self
+            .workbook
+            .file_path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| format!("{}.csv", stem.to_string_lossy()))
+            .unwrap_or_else(|| "Bảng tính.csv".to_owned());
+        if let Some(path) = file_dialog(true, &initial) {
+            self.path_buffer = path.display().to_string();
+            self.save_path();
+        }
+    }
     pub(super) fn request_clipboard_paste(&mut self, _ctx: &Context) {
         match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
             Ok(text) => self.paste_from_clipboard(&text),

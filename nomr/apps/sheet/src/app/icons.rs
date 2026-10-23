@@ -5,6 +5,8 @@ pub(super) enum Icon {
     Save,
     Open,
     New,
+    Download,
+    Keyboard,
     Undo,
     Redo,
     Copy,
@@ -55,6 +57,23 @@ pub(super) fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::New | Icon::Add => {
             line((-6.0, 0.0), (6.0, 0.0));
             line((0.0, -6.0), (0.0, 6.0));
+        }
+        Icon::Download => {
+            line((0.0, -7.0), (0.0, 3.0));
+            line((-4.0, -1.0), (0.0, 3.0));
+            line((4.0, -1.0), (0.0, 3.0));
+            line((-7.0, 5.0), (-7.0, 8.0));
+            line((-7.0, 8.0), (7.0, 8.0));
+            line((7.0, 8.0), (7.0, 5.0));
+        }
+        Icon::Keyboard => {
+            p.rect_stroke(Rect::from_center_size(c, Vec2::new(18.0, 13.0)), Rounding::same(2.0), s);
+            for row in 0..2 {
+                for column in 0..4 {
+                    p.circle_filled(pt(-5.0 + column as f32 * 3.3, -2.0 + row as f32 * 4.0), 0.7, color);
+                }
+            }
+            line((-3.0, 5.0), (3.0, 5.0));
         }
         Icon::Undo | Icon::Redo => {
             let d = if matches!(icon, Icon::Undo) { 1.0 } else { -1.0 };
@@ -172,6 +191,17 @@ pub(super) fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
 }
 
 pub(super) fn button(ui: &mut Ui, icon: Icon, title: &str, label: Option<&str>, selected: bool) -> bool {
+    button_with_color(ui, icon, title, label, selected, Color32::from_rgb(72, 76, 80))
+}
+
+pub(super) fn button_with_color(
+    ui: &mut Ui,
+    icon: Icon,
+    title: &str,
+    label: Option<&str>,
+    selected: bool,
+    icon_color: Color32,
+) -> bool {
     let size = if label.is_some() {
         Vec2::new(58.0, 54.0)
     } else {
@@ -194,7 +224,7 @@ pub(super) fn button(ui: &mut Ui, icon: Icon, title: &str, label: Option<&str>, 
         ui.painter(),
         Rect::from_center_size(center, Vec2::splat(20.0)),
         icon,
-        Color32::from_rgb(72, 76, 80),
+        icon_color,
     );
     if let Some(text) = label {
         ui.painter().text(
